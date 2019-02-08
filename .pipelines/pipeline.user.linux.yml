@@ -1,0 +1,25 @@
+environment:
+  host:
+    os: 'linux'
+    flavor: 'ubuntu'
+    version: '16.04'
+  runtime:
+    provider: 'appcontainer'
+    image: 'cdpxlinux.azurecr.io/user/container-plat/golang:1.11.5'
+    source_mode: 'link'
+
+version:
+  name: 'containerd_containerd'
+  major: 0
+  minor: 1
+  tag: 'alpha'
+  system: 'patch'
+
+build:
+  commands:
+    - !!buildcommand
+      name: 'build'
+      command: 'build.sh'
+      artifacts:
+        - include:
+          - 'containerd-shim-runhcs-v1.exe'
