@@ -9,11 +9,13 @@ environment:
     source_mode: 'link'
 
 version:
-  name: 'containerd_containerd'
-  major: 0
-  minor: 1
-  tag: 'alpha'
-  system: 'patch'
+  system: 'custom'
+
+versioning:
+  commands:
+    - !!defaultcommand
+      name: 'version'
+      command: 'version.sh'
 
 build:
   commands:
