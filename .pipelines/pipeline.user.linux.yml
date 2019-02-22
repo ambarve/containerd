@@ -8,6 +8,9 @@ environment:
     image: 'cdpxlinux.azurecr.io/user/container-plat/golang:1.11.5'
     source_mode: 'link'
 
+signing_options:
+  profile: 'internal_azure_service'
+
 version:
   system: 'custom'
 
