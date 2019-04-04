@@ -7,9 +7,8 @@ set -eux
 
 export GOOS=windows
 
-# Ensures build outputs are placed in the root source directory, instead of
-# in /, so they can be picked up by the artifact step.
-cd /source
+mkdir -p /source/cdpx-artifacts
+cd /source/cdpx-artifacts
 
 # Set up GOPATH with a symlink pointing to the actual source location.
 mkdir -p $GOPATH/src/github.com/containerd

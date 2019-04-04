@@ -23,5 +23,6 @@ build:
       name: 'build'
       command: 'build.sh'
       artifacts:
-        - include:
-          - 'containerd-shim-runhcs-v1.exe'
+        - from: 'cdpx-artifacts'
+          include:
+          - '*'
