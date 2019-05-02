@@ -5,7 +5,7 @@ environment:
     version: '16.04'
   runtime:
     provider: 'appcontainer'
-    image: 'cdpxlinux.azurecr.io/user/container-plat/golang:1.11.5'
+    image: 'cdpxlinux.azurecr.io/user/container-plat/golang:1.12.4'
     source_mode: 'link'
 
 version:
