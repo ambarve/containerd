@@ -1,0 +1,28 @@
+environment:
+  host:
+    os: 'linux'
+    flavor: 'ubuntu'
+    version: '16.04'
+  runtime:
+    provider: 'appcontainer'
+    image: 'cdpxlinux.azurecr.io/user/container-plat/golang:1.13.10'
+    source_mode: 'link'
+
+version:
+  system: 'custom'
+
+versioning:
+  commands:
+    - !!defaultcommand
+      name: 'version'
+      command: 'version.sh'
+
+build:
+  commands:
+    - !!buildcommand
+      name: 'build'
+      command: 'build.sh'
+      artifacts:
+        - from: 'cdpx-artifacts'
+          include:
+          - '*'
