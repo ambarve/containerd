@@ -31,6 +31,7 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/mylogger"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/storage"
@@ -143,6 +144,7 @@ func (s *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 }
 
 func (s *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
+	// pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
 	return s.createSnapshot(ctx, snapshots.KindActive, key, parent, opts)
 }
 
@@ -302,10 +304,24 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 	}
 	defer t.Rollback()
 
+	// check if opt is a cim image. In that case don't create sandbox layer
+	mylogger.LogFmt("createSnapshot opts, len: %d\n", len(opts))
+
+	var sinfo snapshots.Info
+	for _, f := range opts {
+		mylogger.LogFmt("calling Opts.. %v\n", f)
+		if err := f(&sinfo); err != nil {
+			return nil, err
+		}
+	}
+
 	newSnapshot, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create snapshot")
 	}
+
+	mylogger.LogFmt("createSnapshot Info, len: %d\n", len(sinfo.Labels))
+	mylogger.LogStruct(sinfo)
 
 	if kind == snapshots.KindActive {
 		parentLayerPaths := s.parentIDsToParentPaths(newSnapshot.ParentIDs)
@@ -315,9 +331,12 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 			parentPath = parentLayerPaths[0]
 		}
 
+		// if _, ok := sinfo.Labels["cim-images"]; !ok {
+		// mylogger.LogFmt("createSnapshot creating scratch layer\n")
 		if err := hcsshim.CreateSandboxLayer(s.info, newSnapshot.ID, parentPath, parentLayerPaths); err != nil {
-			return nil, errors.Wrap(err, "failed to create sandbox layer")
+			return nil, errors.Wrap(err, "failed(here) to create sandbox layer")
 		}
+		// }
 
 		// TODO(darrenstahlmsft): Allow changing sandbox size
 	}

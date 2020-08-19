@@ -24,9 +24,11 @@ import (
 	"sync/atomic"
 
 	"github.com/containerd/containerd/content"
+	"github.com/containerd/containerd/diff/cimfs"
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/rootfs"
+	"github.com/docker/docker/mylogger"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -134,7 +136,8 @@ func (u *unpacker) unpack(ctx context.Context, config ocispec.Descriptor, layers
 				"desc": states[i].layer.Blob,
 				"diff": states[i].layer.Diff,
 			}).Debug("unpack layer")
-
+			u.config.SnapshotOpts = append(u.config.SnapshotOpts, cimfs.WithCimLabel())
+			mylogger.LogFmt("applying layer in unpacker.go, opts: %v\n", u.config.SnapshotOpts)
 			unpacked, err := rootfs.ApplyLayerWithOpts(ctx, states[i].layer, chain, sn, a,
 				u.config.SnapshotOpts, u.config.ApplyOpts)
 			if err != nil {
