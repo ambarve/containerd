@@ -27,3 +27,13 @@ func AsWindowsContainerLayer() ApplyOpt {
 		return nil
 	}
 }
+
+// AsCimContainerLayer indicates that the tar stream to apply is that of
+// a Windows Container Layer written in the CIM format.
+// TODO(ambarve) The caller must be holding SeBackupPrivilege and SeRestorePrivilege.??
+func AsCimContainerLayer() ApplyOpt {
+	return func(options *ApplyOptions) error {
+		options.applyFunc = applyWindowsCimLayer
+		return nil
+	}
+}
