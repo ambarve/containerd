@@ -110,6 +110,18 @@ func (c cimDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 		}
 	}
 
+	if config.ProcessorPayloads == nil {
+		return emptyDesc, errors.New("payload map empty. Unable to verify snapshotter")
+	} else {
+		val, ok := config.ProcessorPayloads[diff.SnapshotterNameLabel]
+		snName := string(val.Value)
+		if !ok {
+			return emptyDesc, errors.New("snapshotter name not found. Unable to verify snapshotter")
+		} else if snName != "cimfs" {
+			return emptyDesc, errors.Errorf("expected cimfs snapshotter found %s", snName)
+		}
+	}
+
 	ra, err := c.store.ReaderAt(ctx, desc)
 	if err != nil {
 		return emptyDesc, errors.Wrap(err, "failed to get reader from content store")
@@ -132,7 +144,7 @@ func (c cimDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 		r: io.TeeReader(processor, digester.Hash()),
 	}
 
-	layer, parentLayerPaths, err := mountsToLayerAndParents(mounts)
+	layer, parentLayerPaths, err := cimmountsToLayerAndParents(mounts)
 	if err != nil {
 		return emptyDesc, err
 	}
@@ -177,16 +189,20 @@ func (rc *readCounter) Read(p []byte) (n int, err error) {
 	return
 }
 
-func mountsToLayerAndParents(mounts []mount.Mount) (string, []string, error) {
+func cimmountsToLayerAndParents(mounts []mount.Mount) (string, []string, error) {
 	if len(mounts) != 1 {
 		return "", nil, errors.Wrap(errdefs.ErrInvalidArgument, "number of mounts should always be 1 for Windows layers")
 	}
 	mnt := mounts[0]
-	if mnt.Type != "windows-layer" {
+	if mnt.Type != "cimfs" {
 		// This is a special case error. When this is received the diff service
 		// will attempt the next differ in the chain which for Windows is the
-		// lcow differ that we want.
+		// legacy wcow differ that we want.
 		return "", nil, errdefs.ErrNotImplemented
+	}
+	// verify that there is no mounted cim
+	if mount.GetMountedCim(&mnt) != "" {
+		return "", nil, errors.New("found mounted cim when applying a diff")
 	}
 
 	parentLayerPaths, err := mnt.GetParentPaths()

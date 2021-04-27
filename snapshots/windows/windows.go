@@ -32,6 +32,7 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
+
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/storage"
@@ -47,28 +48,29 @@ func init() {
 			return NewSnapshotter(ic.Root)
 		},
 	})
+
+	plugin.Register(&plugin.Registration{
+		Type: plugin.SnapshotPlugin,
+		ID:   "cimfs",
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			return NewCimfsSnapshotter(ic.Root)
+		},
+	})
 }
 
 const (
 	rootfsSizeLabel = "containerd.io/snapshot/io.microsoft.container.storage.rootfs.size-gb"
 )
 
-type snapshotter struct {
+type legacySnapshotter struct {
 	root string
 	info hcsshim.DriverInfo
 	ms   *storage.MetaStore
 }
 
-// NewSnapshotter returns a new windows snapshotter
-func NewSnapshotter(root string) (snapshots.Snapshotter, error) {
-	fsType, err := winfs.GetFileSystemType(root)
-	if err != nil {
-		return nil, err
-	}
-	if strings.ToLower(fsType) != "ntfs" {
-		return nil, errors.Wrapf(errdefs.ErrInvalidArgument, "%s is not on an NTFS volume - only NTFS volumes are supported", root)
-	}
-
+// newSnapshotter does the common setup (like creating snapshotter directories etc.) required for
+// both windows & cimfs snapshotters.
+func newSnapshotter(root string) (*legacySnapshotter, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
@@ -81,7 +83,7 @@ func NewSnapshotter(root string) (snapshots.Snapshotter, error) {
 		return nil, err
 	}
 
-	return &snapshotter{
+	return &legacySnapshotter{
 		info: hcsshim.DriverInfo{
 			HomeDir: filepath.Join(root, "snapshots"),
 		},
@@ -90,12 +92,25 @@ func NewSnapshotter(root string) (snapshots.Snapshotter, error) {
 	}, nil
 }
 
+// NewSnapshotter returns a new windows snapshotter
+func NewSnapshotter(root string) (snapshots.Snapshotter, error) {
+	fsType, err := winfs.GetFileSystemType(root)
+	if err != nil {
+		return nil, err
+	}
+	if strings.ToLower(fsType) != "ntfs" {
+		return nil, errors.Wrapf(errdefs.ErrInvalidArgument, "%s is not on an NTFS volume - only NTFS volumes are supported", root)
+	}
+
+	return newSnapshotter(root)
+}
+
 // Stat returns the info for an active or committed snapshot by name or
 // key.
 //
 // Should be used for parent resolution, existence checks and to discern
 // the kind of snapshot.
-func (s *snapshotter) Stat(ctx context.Context, key string) (snapshots.Info, error) {
+func (s *legacySnapshotter) Stat(ctx context.Context, key string) (snapshots.Info, error) {
 	ctx, t, err := s.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return snapshots.Info{}, err
@@ -106,7 +121,7 @@ func (s *snapshotter) Stat(ctx context.Context, key string) (snapshots.Info, err
 	return info, err
 }
 
-func (s *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
+func (s *legacySnapshotter) Update(ctx context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
 	ctx, t, err := s.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return snapshots.Info{}, err
@@ -125,7 +140,7 @@ func (s *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 	return info, nil
 }
 
-func (s *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, error) {
+func (s *legacySnapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, error) {
 	ctx, t, err := s.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return snapshots.Usage{}, err
@@ -150,11 +165,11 @@ func (s *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 	return usage, nil
 }
 
-func (s *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
+func (s *legacySnapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
 	return s.createSnapshot(ctx, snapshots.KindActive, key, parent, opts)
 }
 
-func (s *snapshotter) View(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
+func (s *legacySnapshotter) View(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
 	return s.createSnapshot(ctx, snapshots.KindView, key, parent, opts)
 }
 
@@ -162,7 +177,7 @@ func (s *snapshotter) View(ctx context.Context, key, parent string, opts ...snap
 // called on an read-write or readonly transaction.
 //
 // This can be used to recover mounts after calling View or Prepare.
-func (s *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, error) {
+func (s *legacySnapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, error) {
 	ctx, t, err := s.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return nil, err
@@ -176,7 +191,7 @@ func (s *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, er
 	return s.mounts(snapshot), nil
 }
 
-func (s *snapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
+func (s *legacySnapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
 	ctx, t, err := s.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return err
@@ -209,7 +224,7 @@ func (s *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 
 // Remove abandons the transaction identified by key. All resources
 // associated with the key will be removed.
-func (s *snapshotter) Remove(ctx context.Context, key string) error {
+func (s *legacySnapshotter) Remove(ctx context.Context, key string) error {
 	ctx, t, err := s.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return err
@@ -256,7 +271,7 @@ func (s *snapshotter) Remove(ctx context.Context, key string) error {
 }
 
 // Walk the committed snapshots.
-func (s *snapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, fs ...string) error {
+func (s *legacySnapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, fs ...string) error {
 	ctx, t, err := s.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return err
@@ -267,11 +282,11 @@ func (s *snapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, fs ...str
 }
 
 // Close closes the snapshotter
-func (s *snapshotter) Close() error {
+func (s *legacySnapshotter) Close() error {
 	return s.ms.Close()
 }
 
-func (s *snapshotter) mounts(sn storage.Snapshot) []mount.Mount {
+func (s *legacySnapshotter) mounts(sn storage.Snapshot) []mount.Mount {
 	var (
 		roFlag           string
 		source           string
@@ -309,11 +324,11 @@ func (s *snapshotter) mounts(sn storage.Snapshot) []mount.Mount {
 	return mounts
 }
 
-func (s *snapshotter) getSnapshotDir(id string) string {
+func (s *legacySnapshotter) getSnapshotDir(id string) string {
 	return filepath.Join(s.root, "snapshots", id)
 }
 
-func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) ([]mount.Mount, error) {
+func (s *legacySnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) ([]mount.Mount, error) {
 	ctx, t, err := s.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return nil, err
@@ -366,7 +381,7 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 	return s.mounts(newSnapshot), nil
 }
 
-func (s *snapshotter) parentIDsToParentPaths(parentIDs []string) []string {
+func (s *legacySnapshotter) parentIDsToParentPaths(parentIDs []string) []string {
 	var parentLayerPaths []string
 	for _, ID := range parentIDs {
 		parentLayerPaths = append(parentLayerPaths, s.getSnapshotDir(ID))
