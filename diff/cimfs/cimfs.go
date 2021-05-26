@@ -110,17 +110,18 @@ func (c cimDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 		}
 	}
 
-	if config.ProcessorPayloads == nil {
-		return emptyDesc, errors.New("payload map empty. Unable to verify snapshotter")
-	} else {
-		val, ok := config.ProcessorPayloads[diff.SnapshotterNameLabel]
-		snName := string(val.Value)
-		if !ok {
-			return emptyDesc, errors.New("snapshotter name not found. Unable to verify snapshotter")
-		} else if snName != "cimfs" {
-			return emptyDesc, errors.Errorf("expected cimfs snapshotter found %s", snName)
-		}
-	}
+	// TODO(ambarve): Fix this
+	// if config.ProcessorPayloads == nil {
+	// 	return emptyDesc, errors.New("payload map empty. Unable to verify snapshotter")
+	// } else {
+	// 	val, ok := config.ProcessorPayloads[diff.SnapshotterNameLabel]
+	// 	snName := string(val.Value)
+	// 	if !ok {
+	// 		return emptyDesc, errors.New("snapshotter name not found. Unable to verify snapshotter")
+	// 	} else if snName != "cimfs" {
+	// 		return emptyDesc, errors.Errorf("expected cimfs snapshotter found %s", snName)
+	// 	}
+	// }
 
 	ra, err := c.store.ReaderAt(ctx, desc)
 	if err != nil {

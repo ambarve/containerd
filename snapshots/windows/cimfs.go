@@ -28,7 +28,6 @@ import (
 	"github.com/Microsoft/hcsshim"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
-	"github.com/containerd/containerd/mylogger"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/storage"
 	"github.com/containerd/continuity/fs"
@@ -167,7 +166,6 @@ func (s *cimfsSnapshotter) Prepare(ctx context.Context, key, parent string, opts
 	if err != nil {
 		return m, err
 	}
-	mylogger.LogFmt("forwarding from Prepare key: %s, parent: %s, mount: %+v to toCimfsMounts\n", key, parent, m[0])
 	return s.toCimfsMounts(ctx, m, key, opts...)
 }
 
@@ -176,7 +174,6 @@ func (s *cimfsSnapshotter) View(ctx context.Context, key, parent string, opts ..
 	if err != nil {
 		return m, err
 	}
-	mylogger.LogFmt("forwarding from View key: %s, parent: %s, mount: %+v to toCimfsMounts\n", key, parent, m[0])
 	return s.toCimfsMounts(ctx, m, key, opts...)
 }
 
@@ -197,15 +194,13 @@ func (s *cimfsSnapshotter) toCimfsMounts(ctx context.Context, m []mount.Mount, k
 		return m, errors.Wrap(err, "failed to get snapshot")
 	}
 
-	var mountedLocation string
 	if sn.Kind == snapshots.KindView || isScratchLayer(key) {
-		// mount the parent cim
-		mountedLocation = s.cmm.getCimMountPath(s, sn.ParentIDs[0])
-		mylogger.LogFmt("mountedLocation for sn ID: %s is %s\n", sn.ID, mountedLocation)
+		// mount the parent cim if required.
+		mountedLocation := s.cmm.getCimMountPath(s, sn.ParentIDs[0])
 		if mountedLocation == "" {
 			mountedLocation, err = s.cmm.mountSnapshot(s, sn.ParentIDs[0])
 			if err != nil {
-				return m, errors.Wrap(err, "failed to mount parent snapshot")
+				return m, errors.Wrap(err, "failed to mount parent snapshot  ")
 			}
 		}
 		m[0].Options = append(m[0].Options, mount.MountedCimFlag+mountedLocation)
@@ -225,7 +220,6 @@ func (s *cimfsSnapshotter) Mounts(ctx context.Context, key string) ([]mount.Moun
 	if err != nil {
 		return nil, err
 	}
-	mylogger.LogFmt("forwarding from Mounts key: %s, mount: %+v to toCimfsMounts\n", key, lm[0])
 	return s.toCimfsMounts(ctx, lm, key)
 }
 
@@ -266,30 +260,22 @@ func (s *cimfsSnapshotter) Commit(ctx context.Context, name, key string, opts ..
 // Remove abandons the transaction identified by key. All resources
 // associated with the key will be removed.
 func (s *cimfsSnapshotter) Remove(ctx context.Context, key string) error {
-	mylogger.LogFmt("cimfs Remove with key: %s\n", key)
 	ctx, t, err := s.legacySn.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return err
 	}
 	defer t.Rollback()
 
-	isCimLayer, err := s.isCimLayer(ctx, key)
-	if err != nil {
-		return errors.Wrap(err, "failed to check for cim layer")
-	}
-
 	id, info, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return errors.Wrap(err, "failed to get snapshot info")
 	}
 
-	mylogger.LogFmt("id: %s, info: %+v, isCimLayer: %t\n", id, info, isCimLayer)
-
 	if info.Kind == snapshots.KindActive {
 		// unmount the parent cim
 		pid, _, _, err := storage.GetInfo(ctx, info.Parent)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get info for snapshot: %s", info.Parent)
+			return errors.Wrapf(err, "failed to get info for snapshot: %s", pid)
 		}
 		if err := s.cmm.unmountSnapshot(s, pid); err != nil {
 			if !strings.Contains(err.Error(), "not mounted") {
@@ -297,14 +283,14 @@ func (s *cimfsSnapshotter) Remove(ctx context.Context, key string) error {
 			}
 		}
 	} else {
+		if s.cmm.inUse(s, id) {
+			return errors.Errorf("can't remove snapshot %s when it is being used", id)
+		}
 		// unmount this cim first
 		if err := s.cmm.unmountSnapshot(s, id); err != nil {
 			if !strings.Contains(err.Error(), "not mounted") {
 				return errors.Wrap(err, "failed to unmount cim")
 			}
-		}
-		if s.cmm.inUse(s, id) {
-			return errors.Errorf("can't remove snapshot %s when it is being used", id)
 		}
 		if err := hcsshim.DestroyCimLayer(s.legacySn.info, id); err != nil {
 			return err
