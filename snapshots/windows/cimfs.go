@@ -49,7 +49,6 @@ import (
 // layer of a container can be exported to a cim layer and then be used as a parent layer
 // for another container).  Since CimFS can not be used for scratch layers we still use
 // the existing windows snapshotter to create writable scratch space snapshots.
-// TODO(ambarve): Handle exporting a container scratch layer as a read-only parent cim layer.
 
 // The `isReadOnlyParentLayer` function determines if the new snapshot is going to be a
 // read-only parent layer or if it is going to be a scratch layer. Based on this
@@ -88,11 +87,11 @@ type cimfsSnapshotter struct {
 }
 
 const (
-	// TODO(ambarve): These labels shouldn't be inherited, they are specific to a
+	// These labels shouldn't be inherited, they are specific to a
 	// particular snapshot and they include the information about the mounted cim
 	// represented by that snapshot so we don't want the child snapshot of this
 	// snapshot to inherit these labels. Hence, don't prefix them with
-	// `containerd.io/snapshot`. TODO is to verify if this assumption is correct.
+	// `containerd.io/snapshot`.
 
 	// This label is used to store the current ref count of the mounted cim of this snapshot.
 	mountedRefCountLabel = "io.microsoft.cimfs.refcount"

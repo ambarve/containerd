@@ -46,8 +46,6 @@ func GetMountedCim(m *Mount) string {
 	return ""
 }
 
-// Mount mounts the given cim mount at path `cimPath` and returns the mount location of that cim.
-// If this cim is already mounted then nothing is done.
 func cimMount(m *Mount, target string) (_ string, err error) {
 	mountedCim := GetMountedCim(m)
 	if m.Source == "" || mountedCim == "" {
