@@ -20,9 +20,13 @@ package windows
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Microsoft/go-winio/vhd"
 	"github.com/Microsoft/hcsshim"
@@ -32,6 +36,7 @@ import (
 	"github.com/containerd/containerd/snapshots/storage"
 	"github.com/containerd/continuity/fs"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 // Composite image FileSystem (CimFS) is a new read-only filesystem (similar to unionFS on
@@ -82,18 +87,91 @@ type cimfsSnapshotter struct {
 	cmm *cimfsMountManager
 }
 
+const (
+	// TODO(ambarve): These labels shouldn't be inherited, they are specific to a
+	// particular snapshot and they include the information about the mounted cim
+	// represented by that snapshot so we don't want the child snapshot of this
+	// snapshot to inherit these labels. Hence, don't prefix them with
+	// `containerd.io/snapshot`. TODO is to verify if this assumption is correct.
+
+	// This label is used to store the current ref count of the mounted cim of this snapshot.
+	mountedRefCountLabel = "io.microsoft.cimfs.refcount"
+
+	// This label is used to store the volume at which the cim of this snapshot is mounted.
+	mountedCimVolumeLabel = "io.microsoft.cimfs.mountedvolume"
+)
+
+var (
+	ErrCimNotMounted = errors.New("cim is not mounted")
+)
+
 // NewSnapshotter returns a new windows snapshotter
 func NewCimfsSnapshotter(root string) (snapshots.Snapshotter, error) {
-	if hcsshim.IsCimfsSupported() {
-		ls, err := newSnapshotter(root)
-		return &cimfsSnapshotter{
-			legacySn: ls,
-			cimDir:   filepath.Join(ls.info.HomeDir, "cim-layers"),
-			cmm:      newCimfsMountManager(),
-		}, err
-	} else {
+	if !hcsshim.IsCimfsSupported() {
 		return nil, errors.Errorf("cimfs not supported on this version of windows")
 	}
+	ls, err := newSnapshotter(root)
+
+	// Abort if takes more than 1 second as this will hang at containerd startup.
+	ctx, _ := context.WithTimeout(context.TODO(), 1*time.Second)
+	ctx, t, err := ls.ms.TransactionContext(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	defer t.Rollback()
+
+	mountManagerMap, err := loadMountedCimInfo(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "cimfs snapshot initialization failed while reading mounted cim info")
+	}
+
+	return &cimfsSnapshotter{
+		legacySn: ls,
+		cimDir:   filepath.Join(ls.info.HomeDir, "cim-layers"),
+		cmm:      newCimfsMountManager(filepath.Join(ls.info.HomeDir, "cim-layers"), ls.ms, mountManagerMap),
+	}, nil
+}
+
+// loadMountedCimInfo goes over all the snapshots in the metadata stores and reads the cimfs mount labels
+// from them. It returns a map which contains the information of these mounted cims.
+// Expects a storage transaction context.
+func loadMountedCimInfo(ctx context.Context) (map[string]*mountedCimInfo, error) {
+	mountManagerMap := make(map[string]*mountedCimInfo)
+	err := storage.WalkInfo(ctx, func(ctx context.Context, info snapshots.Info) error {
+		if info.Labels == nil {
+			return nil
+		}
+
+		refCountStr, hasRefCount := info.Labels[mountedRefCountLabel]
+		mountedVolume, hasMountedVolume := info.Labels[mountedCimVolumeLabel]
+
+		refCount, err := strconv.ParseUint(refCountStr, 10, 32)
+		if err != nil {
+			return errors.Wrapf(err, "fetchCimMountInfo failed to parse refCount value %s", refCountStr)
+		}
+
+		if hasRefCount && hasMountedVolume {
+			mountManagerMap[info.Name] = &mountedCimInfo{
+				snapshotKey: info.Name,
+				refCount:    uint32(refCount),
+				mountedPath: mountedVolume,
+			}
+
+			log.G(ctx).WithFields(logrus.Fields{
+				"snapshot key":   info.Name,
+				"ref count":      refCount,
+				"mounted volume": mountedVolume,
+			}).Trace("loaded mounted cim info")
+		}
+		return nil
+	})
+
+	// on fresh start Walk function will throw `bucket does not exist` error because
+	// there are no buckets in the DB yet. Ignore that error.
+	if err != nil && !strings.Contains(err.Error(), "bucket does not exist") {
+		return nil, errors.Wrap(err, "cimfs snapshotter init failed")
+	}
+	return mountManagerMap, nil
 }
 
 // isScratchLayer returns true if this snapshot will be a read-only parent layer
@@ -116,8 +194,8 @@ func isScratchLayer(key string) bool {
 // getCimLayerPath returns the path of the cim file for the given snapshot. Note that this function
 // doesn't actually check if the cim layer exists it simply does string manipulation to generate the path
 // isCimLayer can be used to verify if it is actually a cim layer.
-func (s *cimfsSnapshotter) getCimLayerPath(snID string) string {
-	return filepath.Join(s.cimDir, (snID + ".cim"))
+func getCimLayerPath(cimDir, snID string) string {
+	return filepath.Join(cimDir, (snID + ".cim"))
 }
 
 // isCimLayer checks if the snapshot referred by the given key is actually a cim layer.
@@ -129,7 +207,7 @@ func (s *cimfsSnapshotter) isCimLayer(ctx context.Context, key string) (bool, er
 	if err != nil {
 		return false, errors.Wrap(err, "failed to get snapshot mount")
 	}
-	snCimPath := s.getCimLayerPath(id)
+	snCimPath := getCimLayerPath(s.cimDir, id)
 	if _, err := os.Stat(snCimPath); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -166,7 +244,7 @@ func (s *cimfsSnapshotter) Prepare(ctx context.Context, key, parent string, opts
 	if err != nil {
 		return m, err
 	}
-	return s.toCimfsMounts(ctx, m, key, opts...)
+	return s.createCimfsMounts(ctx, m, key, opts...)
 }
 
 func (s *cimfsSnapshotter) View(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
@@ -174,10 +252,14 @@ func (s *cimfsSnapshotter) View(ctx context.Context, key, parent string, opts ..
 	if err != nil {
 		return m, err
 	}
-	return s.toCimfsMounts(ctx, m, key, opts...)
+	return s.createCimfsMounts(ctx, m, key, opts...)
 }
 
-func (s *cimfsSnapshotter) toCimfsMounts(ctx context.Context, m []mount.Mount, key string, opts ...snapshots.Opt) ([]mount.Mount, error) {
+// createCimfsMounts creates cimfs snapshotter mounts from the legacy mounts. This
+// function will also mount a parent cim if required. It will persist the information of
+// mounted cims in the metadata DB so that if containerd restarts those cims can be
+// properly cleaned up.
+func (s *cimfsSnapshotter) createCimfsMounts(ctx context.Context, m []mount.Mount, key string, opts ...snapshots.Opt) (_ []mount.Mount, retErr error) {
 	if len(m) != 1 {
 		return m, errors.Errorf("expected exactly 1 mount from legacy windows snapshotter, found %d", len(m))
 	}
@@ -191,36 +273,85 @@ func (s *cimfsSnapshotter) toCimfsMounts(ctx context.Context, m []mount.Mount, k
 
 	sn, err := storage.GetSnapshot(ctx, key)
 	if err != nil {
-		return m, errors.Wrap(err, "failed to get snapshot")
+		return m, errors.Wrap(err, "createCimfsMounts failed to get snapshot")
+	}
+
+	_, info, _, err := storage.GetInfo(ctx, key)
+	if err != nil {
+		return m, errors.Wrap(err, "createCimfsMounts failed to get snapshot info")
 	}
 
 	if sn.Kind == snapshots.KindView || isScratchLayer(key) {
-		// mount the parent cim if required.
-		mountedLocation := s.cmm.getCimMountPath(s, sn.ParentIDs[0])
-		if mountedLocation == "" {
-			mountedLocation, err = s.cmm.mountSnapshot(s, sn.ParentIDs[0])
-			if err != nil {
-				return m, errors.Wrap(err, "failed to mount parent snapshot  ")
-			}
+		// mount the parent cim.
+		mountedLocation, err := s.cmm.mountSnapshot(ctx, info.Parent)
+		if err != nil {
+			return m, errors.Wrap(err, "createCimfsMounts failed to mount snapshot")
 		}
+
+		defer func() {
+			if retErr != nil {
+				if err := s.cmm.unmountSnapshot(ctx, mountedLocation); err != nil {
+					log.G(ctx).WithError(retErr).Warnf("cimfs cleanup on failure during create cimfs mounts failed: %s", err)
+				}
+			}
+		}()
+
 		m[0].Options = append(m[0].Options, mount.MountedCimFlag+mountedLocation)
 		if sn.Kind == snapshots.KindView {
 			m[0].Source = ""
 		}
 	}
+
+	if err = t.Commit(); err != nil {
+		return m, err
+	}
+
 	return m, nil
+
 }
 
-// Mounts returns the mounts for the transaction identified by key. Can be
-// called on an read-write or readonly transaction.
+// Mounts returns the cimfs mounts for the snapshot identified by key.
 //
 // This can be used to recover mounts after calling View or Prepare.
 func (s *cimfsSnapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, error) {
-	lm, err := s.legacySn.Mounts(ctx, key)
+	ctx, t, err := s.legacySn.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	return s.toCimfsMounts(ctx, lm, key)
+	defer t.Rollback()
+
+	sn, err := storage.GetSnapshot(ctx, key)
+	if err != nil {
+		return nil, errors.Wrap(err, "mounts failed to get snapshot")
+	}
+
+	_, snInfo, _, err := storage.GetInfo(ctx, key)
+	if err != nil {
+		return nil, errors.Wrap(err, "mounts failed to get snapshot info")
+	}
+
+	mounts, err := s.legacySn.mounts(sn), nil
+	if err != nil {
+		return nil, err
+	}
+
+	if len(mounts) != 1 {
+		return mounts, errors.Errorf("expected exactly 1 mount from legacy windows snapshotter, found %d", len(mounts))
+	}
+
+	mounts[0].Type = "cimfs"
+
+	if sn.Kind == snapshots.KindView || isScratchLayer(key) {
+		mountedLocation, err := s.cmm.getCimMountPath(snInfo.Parent)
+		if err != nil {
+			return mounts, errors.Wrap(err, "failed to get parent cim mount location")
+		}
+		mounts[0].Options = append(mounts[0].Options, mount.MountedCimFlag+mountedLocation)
+		if sn.Kind == snapshots.KindView {
+			mounts[0].Source = ""
+		}
+	}
+	return mounts, nil
 }
 
 func (s *cimfsSnapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
@@ -247,9 +378,9 @@ func (s *cimfsSnapshotter) Commit(ctx context.Context, name, key string, opts ..
 	if err != nil {
 		return err
 	}
-	//TODO(ambarve): Add cim files disk usage here
-	//TOOD(ambarve): Now when committing a scratch layer we must
-	// write it to cimfs. Add that logic.
+	// TODO(ambarve): Add cim files disk usage here
+	// TODO(ambarve): When committing a scratch layer we must write it to cimfs. Add
+	// that logic.
 
 	if _, err = storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
 		return errors.Wrap(err, "failed to commit snapshot")
@@ -273,22 +404,18 @@ func (s *cimfsSnapshotter) Remove(ctx context.Context, key string) error {
 
 	if info.Kind == snapshots.KindActive {
 		// unmount the parent cim
-		pid, _, _, err := storage.GetInfo(ctx, info.Parent)
-		if err != nil {
-			return errors.Wrapf(err, "failed to get info for snapshot: %s", pid)
-		}
-		if err := s.cmm.unmountSnapshot(s, pid); err != nil {
-			if !strings.Contains(err.Error(), "not mounted") {
+		if err := s.cmm.unmountSnapshot(ctx, info.Parent); err != nil {
+			if !errors.Is(err, ErrCimNotMounted) {
 				return errors.Wrap(err, "failed to unmount cim")
 			}
 		}
 	} else {
-		if s.cmm.inUse(s, id) {
-			return errors.Errorf("can't remove snapshot %s when it is being used", id)
+		if s.cmm.inUse(key) {
+			return errors.Errorf("can't remove snapshot when it is being used")
 		}
 		// unmount this cim first
-		if err := s.cmm.unmountSnapshot(s, id); err != nil {
-			if !strings.Contains(err.Error(), "not mounted") {
+		if err := s.cmm.unmountSnapshot(ctx, key); err != nil {
+			if !errors.Is(err, ErrCimNotMounted) {
 				return errors.Wrap(err, "failed to unmount cim")
 			}
 		}
@@ -347,10 +474,12 @@ func (s *cimfsSnapshotter) Close() error {
 }
 
 type mountedCimInfo struct {
-	// ID of the snapshot
-	snapshotID string
+	// Key of the snapshot
+	snapshotKey string
 	// ref count for number of times this cim was mounted.
 	refCount uint32
+	// mounted volume i.e the volume at which this mounted cim can be accessed.
+	mountedPath string
 }
 
 // A default mount manager that maintain mounts of cimfs snapshotter
@@ -358,39 +487,134 @@ type mountedCimInfo struct {
 // how to mount / unmount snapshots but it can be replaced with
 // some other policies.
 type cimfsMountManager struct {
-	// hostCimMounts map[string]*mountedCimInfo
+	hostCimMounts map[string]*mountedCimInfo
+	mountMapLock  sync.Mutex
+	// path to the directory inside which all cim layers are stored.
+	cimDir string
+	// metadata store in which information of mounted cim will be persisted.
+	ms *storage.MetaStore
 }
 
-func newCimfsMountManager() *cimfsMountManager {
-	// TODO(ambarve): We probably should save the state of mount manager and restore it
-	// if containerd restarts.
+func newCimfsMountManager(cimDir string, metaStore *storage.MetaStore, initMap map[string]*mountedCimInfo) *cimfsMountManager {
+	if initMap == nil {
+		initMap = make(map[string]*mountedCimInfo)
+	}
 	return &cimfsMountManager{
-		// hostCimMounts: make(map[string]*mountedCimInfo),
+		hostCimMounts: initMap,
+		cimDir:        cimDir,
+		ms:            metaStore,
 	}
 }
 
-func (cm *cimfsMountManager) mountSnapshot(s *cimfsSnapshotter, snID string) (string, error) {
-	return hcsshim.MountCim(s.getCimLayerPath(snID))
+// mountSnapshot takes the key of a snapshot and mounts the cim associated with it.
+// the context needs to be a transaction context.
+func (cm *cimfsMountManager) mountSnapshot(ctx context.Context, snKey string) (_ string, retErr error) {
+	cm.mountMapLock.Lock()
+	defer cm.mountMapLock.Unlock()
+
+	snID, snInfo, _, err := storage.GetInfo(ctx, snKey)
+	if err != nil {
+		return "", errors.Wrap(err, "mount snapshot cim failed to get snapshot info")
+	}
+
+	if _, ok := cm.hostCimMounts[snKey]; !ok {
+		mountPath, err := hcsshim.MountCim(getCimLayerPath(cm.cimDir, snID))
+		if err != nil {
+			return "", errors.Wrap(err, "failed to mount cim")
+		}
+		cm.hostCimMounts[snKey] = &mountedCimInfo{snapshotKey: snKey, mountedPath: mountPath}
+
+		log.G(ctx).WithFields(logrus.Fields{
+			"snapshot key":   snKey,
+			"snapshot ID":    snID,
+			"mounted volume": mountPath,
+		}).Trace("mounted snapshot cim")
+
+		defer func() {
+			if retErr != nil {
+				if unmountErr := hcsshim.UnmountCimLayer(mountPath); unmountErr != nil {
+					log.G(ctx).WithError(retErr).Errorf("unmount snapshot cim failed with: %s", unmountErr)
+				}
+				delete(cm.hostCimMounts, snKey)
+			}
+		}()
+	}
+
+	ci := cm.hostCimMounts[snKey]
+	if snInfo.Labels == nil {
+		snInfo.Labels = make(map[string]string)
+	}
+	snInfo.Labels[mountedCimVolumeLabel] = ci.mountedPath
+	snInfo.Labels[mountedRefCountLabel] = fmt.Sprintf("%d", ci.refCount+1)
+
+	if _, err := storage.UpdateInfo(ctx, snInfo); err != nil {
+		return "", errors.Wrap(err, "mount snapshot info failed while writing to metastore.")
+	}
+
+	// We actually want to update the refcount here and not before the storage. UpdateInfo call so that
+	// if storage.UpdateInfo call fails we don't increase the count unnecessarily.
+	ci.refCount += 1
+
+	return ci.mountedPath, nil
 }
 
-func (cm *cimfsMountManager) unmountSnapshot(s *cimfsSnapshotter, snID string) error {
-	return hcsshim.UnmountCimLayer(s.getCimLayerPath(snID))
+func (cm *cimfsMountManager) unmountSnapshot(ctx context.Context, snKey string) error {
+	cm.mountMapLock.Lock()
+	defer cm.mountMapLock.Unlock()
+	ci, ok := cm.hostCimMounts[snKey]
+	if !ok {
+		return ErrCimNotMounted
+	}
+
+	snID, snInfo, _, err := storage.GetInfo(ctx, snKey)
+	if err != nil {
+		return errors.Wrap(err, "unmount snapshot cim failed to get snapshot info")
+	}
+
+	if ci.refCount == 1 {
+		if err := hcsshim.UnmountCimLayer(ci.mountedPath); err != nil {
+			return err
+		}
+
+		log.G(ctx).WithFields(logrus.Fields{
+			"snapshot key":   snKey,
+			"snapshot ID":    snID,
+			"mounted volume": ci.mountedPath,
+		}).Trace("unmounted snapshot cim")
+
+		delete(cm.hostCimMounts, snKey)
+		delete(snInfo.Labels, mountedCimVolumeLabel)
+		delete(snInfo.Labels, mountedRefCountLabel)
+
+	} else {
+		ci.refCount -= 1
+		snInfo.Labels[mountedCimVolumeLabel] = ci.mountedPath
+		snInfo.Labels[mountedRefCountLabel] = fmt.Sprintf("%d", ci.refCount)
+	}
+
+	if _, err := storage.UpdateInfo(ctx, snInfo); err != nil {
+		return errors.Wrap(err, "unmount snapshot info failed while writing to metastore.")
+	}
+
+	return nil
 }
 
 // checks if the cim for given snapshot is still mounted
-func (cm *cimfsMountManager) inUse(s *cimfsSnapshotter, snID string) bool {
-	if _, err := hcsshim.GetCimMountPath(s.getCimLayerPath(snID)); err != nil {
-		if strings.Contains(err.Error(), "not mounted") {
-			return false
-		}
+func (cm *cimfsMountManager) inUse(snKey string) bool {
+	cm.mountMapLock.Lock()
+	defer cm.mountMapLock.Unlock()
+	if _, ok := cm.hostCimMounts[snKey]; !ok {
+		return false
 	}
 	return true
 }
 
-func (cm *cimfsMountManager) getCimMountPath(s *cimfsSnapshotter, snID string) string {
-	mountPath, err := hcsshim.GetCimMountPath(s.getCimLayerPath(snID))
-	if err != nil {
-		return ""
+func (cm *cimfsMountManager) getCimMountPath(snKey string) (string, error) {
+	cm.mountMapLock.Lock()
+	defer cm.mountMapLock.Unlock()
+	ci, ok := cm.hostCimMounts[snKey]
+	if !ok {
+		return "", ErrCimNotMounted
 	}
-	return mountPath
+	return ci.mountedPath, nil
 }
