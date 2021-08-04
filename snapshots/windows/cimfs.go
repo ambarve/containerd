@@ -37,6 +37,7 @@ import (
 	"github.com/containerd/continuity/fs"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/windows"
 )
 
 // Composite image FileSystem (CimFS) is a new read-only filesystem (similar to unionFS on
@@ -131,6 +132,18 @@ func NewCimfsSnapshotter(root string) (snapshots.Snapshotter, error) {
 	}, nil
 }
 
+// checkIfVolumeExists checks if the provided `volumePath` (in the form "\\?\Volume{<GUID>}\") actually represents a volume on the system. Returns true if such a volume is found, false otherwise.
+func checkIfVolumeExists(volumePath string) (bool, error) {
+	volumeStrUtf16, err := windows.UTF16FromString(volumePath)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to convert volume path to UTF16")
+	}
+	if err := windows.GetVolumeInformation(&volumeStrUtf16[0], nil, 0, nil, nil, nil, nil, 0); err != nil {
+		return false, errors.Wrap(err, "failed to get volume information")
+	}
+	return true, nil
+}
+
 // loadMountedCimInfo goes over all the snapshots in the metadata stores and reads the cimfs mount labels
 // from them. It returns a map which contains the information of these mounted cims.
 // Expects a storage transaction context.
@@ -150,6 +163,17 @@ func loadMountedCimInfo(ctx context.Context) (map[string]*mountedCimInfo, error)
 		}
 
 		if hasRefCount && hasMountedVolume {
+			// verify if this volume is still mounted.
+			if exists, err := checkIfVolumeExists(mountedVolume); !exists {
+				log.G(ctx).WithFields(logrus.Fields{
+					"snapshot key":       info.Name,
+					"ref count":          refCount,
+					"mounted volume":     mountedVolume,
+					"volume check error": err,
+				}).Trace("skipping mounted cim info as volume check failed.")
+				return nil
+			}
+
 			mountManagerMap[info.Name] = &mountedCimInfo{
 				snapshotKey: info.Name,
 				refCount:    uint32(refCount),
