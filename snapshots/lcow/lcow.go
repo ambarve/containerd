@@ -147,7 +147,8 @@ func (s *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 	}
 
 	if info.Kind == snapshots.KindActive {
-		du, err := fs.DiskUsage(ctx, s.getSnapshotDir(id))
+		path := s.getSnapshotDir(id)
+		du, err := fs.DiskUsage(ctx, path)
 		if err != nil {
 			return snapshots.Usage{}, err
 		}
