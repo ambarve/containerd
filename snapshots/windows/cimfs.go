@@ -95,10 +95,10 @@ const (
 	// `containerd.io/snapshot`.
 
 	// This label is used to store the current ref count of the mounted cim of this snapshot.
-	mountedRefCountLabel = "io.microsoft.cimfs.refcount"
+	mountedRefCountLabel = "containerd.io/snapshot/cimfs/refcount"
 
 	// This label is used to store the volume at which the cim of this snapshot is mounted.
-	mountedCimVolumeLabel = "io.microsoft.cimfs.mountedvolume"
+	mountedCimVolumeLabel = "containerd.io/snapshot/cimfs/mountedvolume"
 )
 
 var (
