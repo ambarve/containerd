@@ -351,7 +351,7 @@ func (s *snapshotter) getResolvedSnapshotDir(id string, info snapshots.Info) str
 	return path
 }
 
-func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) ([]mount.Mount, error) {
+func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ []mount.Mount, err error) {
 	ctx, t, err := s.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return nil, err
@@ -386,14 +386,18 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 				"snapshot id":                    newSnapshot.ID,
 				"snapshot scratch override path": scratchDir,
 			}).Debug("overriding scratch snapshot location")
+
 			snActualDir := filepath.Join(scratchDir, newSnapshot.ID)
 			if err := os.MkdirAll(snActualDir, 0700); err != nil {
 				return nil, err
 			}
+			defer snapshots.OnErrorDirectoryCleanup(ctx, snActualDir, &err)
+
 			// create a link to the actual snDir in s.root/snapshots directory
 			if err := os.Symlink(snActualDir, snDir); err != nil {
 				return nil, err
 			}
+
 			snDirInfo.HomeDir = scratchDir
 		} else {
 			// Create the new snapshot dir
@@ -401,6 +405,7 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 				return nil, err
 			}
 		}
+		defer snapshots.OnErrorDirectoryCleanup(ctx, snDir, &err)
 
 		// IO/disk space optimization
 		//

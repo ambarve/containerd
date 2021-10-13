@@ -31,6 +31,7 @@ import (
 	"time"
 
 	winfs "github.com/Microsoft/go-winio/pkg/fs"
+	"github.com/Microsoft/hcsshim"
 	"github.com/Microsoft/hcsshim/pkg/go-runhcs"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
@@ -41,6 +42,7 @@ import (
 	"github.com/containerd/continuity/fs"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 func init() {
@@ -59,7 +61,6 @@ func init() {
 
 const (
 	rootfsSizeLabel           = "containerd.io/snapshot/io.microsoft.container.storage.rootfs.size-gb"
-	rootfsLocLabel            = "containerd.io/snapshot/io.microsoft.container.storage.rootfs.location"
 	reuseScratchLabel         = "containerd.io/snapshot/io.microsoft.container.storage.reuse-scratch"
 	reuseScratchOwnerKeyLabel = "containerd.io/snapshot/io.microsoft.owner.key"
 )
@@ -147,7 +148,7 @@ func (s *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 	}
 
 	if info.Kind == snapshots.KindActive {
-		path := s.getSnapshotDir(id)
+		path := s.getResolvedSnapshotDir(id, info)
 		du, err := fs.DiskUsage(ctx, path)
 		if err != nil {
 			return snapshots.Usage{}, err
@@ -198,12 +199,12 @@ func (s *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	}()
 
 	// grab the existing id
-	id, _, _, err := storage.GetInfo(ctx, key)
+	id, info, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return err
 	}
 
-	usage, err := fs.DiskUsage(ctx, s.getSnapshotDir(id))
+	usage, err := fs.DiskUsage(ctx, s.getResolvedSnapshotDir(id, info))
 	if err != nil {
 		return err
 	}
@@ -224,13 +225,26 @@ func (s *snapshotter) Remove(ctx context.Context, key string) error {
 	}
 	defer t.Rollback()
 
-	id, _, err := storage.Remove(ctx, key)
+	id, info, _, err := storage.GetInfo(ctx, key)
+	if err != nil {
+		return errors.Wrap(err, "remove failed to get snapshot info")
+	}
+
+	snDirInfo := hcsshim.DriverInfo{
+		HomeDir: filepath.Join(s.root, "snapshots"),
+	}
+	if scratchDir, ok := info.Labels[snapshots.LabelScratchSnapshotLocation]; ok {
+		snDirInfo.HomeDir = scratchDir
+	}
+
+	_, _, err = storage.Remove(ctx, key)
 	if err != nil {
 		return errors.Wrap(err, "failed to remove")
 	}
 
-	path := s.getSnapshotDir(id)
-	renamed := s.getSnapshotDir("rm-" + id)
+	path := s.getResolvedSnapshotDir(id, info)
+	renamedID := "rm-" + id
+	renamed := s.getResolvedSnapshotDir(renamedID, info)
 	if err := os.Rename(path, renamed); err != nil && !os.IsNotExist(err) {
 		// Sometimes if there are some open handles to the files (especially VHD)
 		// inside the snapshot directory the rename call will return "access
@@ -253,6 +267,13 @@ func (s *snapshotter) Remove(ctx context.Context, key string) error {
 	if err := os.RemoveAll(renamed); err != nil {
 		// Must be cleaned up, any "rm-*" could be removed if no active transactions
 		log.G(ctx).WithError(err).WithField("path", renamed).Warnf("Failed to remove root filesystem")
+	}
+
+	// Remove the symlink if it exists
+	if _, ok := info.Labels[snapshots.LabelScratchSnapshotLocation]; ok {
+		if err = os.Remove(s.getSnapshotDir(id)); err != nil {
+			log.G(ctx).WithError(err).WithField("path", s.getSnapshotDir(id)).Warnf("failed to remove scratch symlink snapshot dir")
+		}
 	}
 
 	return nil
@@ -316,6 +337,17 @@ func (s *snapshotter) getSnapshotDir(id string) string {
 	return filepath.Join(s.root, "snapshots", id)
 }
 
+// getResolvedSnapshotDir is similar to getSnapshotDir however, it returns the fully resolved
+// path to the snapshot directory if the snapshot is stored at a different
+// location. The path returned by `getSnapshotDir` will actually be a path to a symlink in such cases.
+func (s *snapshotter) getResolvedSnapshotDir(id string, info snapshots.Info) string {
+	path := s.getSnapshotDir(id)
+	if scratchDir, ok := info.Labels[snapshots.LabelScratchSnapshotLocation]; ok {
+		path = filepath.Join(scratchDir, id)
+	}
+	return path
+}
+
 func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ []mount.Mount, err error) {
 	ctx, t, err := s.ms.TransactionContext(ctx, true)
 	if err != nil {
@@ -332,7 +364,7 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 		log.G(ctx).Debug("createSnapshot active")
 		// Create the new snapshot dir
 		snDir := s.getSnapshotDir(newSnapshot.ID)
-		if err := os.MkdirAll(snDir, 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(snDir), 0700); err != nil {
 			return nil, err
 		}
 
@@ -341,11 +373,34 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 			o(&snapshotInfo)
 		}
 
-		defer func() {
-			if err != nil {
-				os.RemoveAll(snDir)
+		// Check if a different path was provided for scratch
+		scratchDir, ok := snapshotInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+		if ok && !strings.Contains(key, snapshots.UnpackKeyPrefix) {
+			// Create the new snapshot dir at given path
+			log.G(ctx).WithFields(logrus.Fields{
+				"snapshot id":                    newSnapshot.ID,
+				"snapshot scratch override path": scratchDir,
+			}).Debug("overriding scratch snapshot location")
+
+			snActualDir := filepath.Join(scratchDir, newSnapshot.ID)
+			if err := os.MkdirAll(snActualDir, 0700); err != nil {
+				return nil, err
 			}
-		}()
+			defer snapshots.OnErrorDirectoryCleanup(ctx, snActualDir, &err)
+
+			// create a link to the actual snDir in s.root/snapshots directory
+			if err := os.Symlink(snActualDir, snDir); err != nil {
+				return nil, err
+			}
+			scratchDir = snActualDir
+		} else {
+			// Create the new snapshot dir
+			if err := os.Mkdir(snDir, 0700); err != nil {
+				return nil, err
+			}
+			scratchDir = snDir
+		}
+		defer snapshots.OnErrorDirectoryCleanup(ctx, snDir, &err)
 
 		// IO/disk space optimization
 		//
@@ -380,15 +435,14 @@ func (s *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 					sizeGB = int(i64)
 				}
 
-				scratchLocation := snapshotInfo.Labels[rootfsLocLabel]
-				scratchSource, err := s.openOrCreateScratch(ctx, sizeGB, scratchLocation)
+				scratchSource, err := s.openOrCreateScratch(ctx, sizeGB)
 				if err != nil {
 					return nil, err
 				}
 				defer scratchSource.Close()
 
 				// Create the sandbox.vhdx for this snapshot from the cache
-				destPath := filepath.Join(snDir, "sandbox.vhdx")
+				destPath := filepath.Join(scratchDir, "sandbox.vhdx")
 				dest, err := os.OpenFile(destPath, os.O_RDWR|os.O_CREATE, 0700)
 				if err != nil {
 					return nil, errors.Wrap(err, "failed to create sandbox.vhdx in snapshot")
@@ -440,7 +494,7 @@ func (s *snapshotter) handleSharing(ctx context.Context, id, snDir string) error
 	return nil
 }
 
-func (s *snapshotter) openOrCreateScratch(ctx context.Context, sizeGB int, scratchLoc string) (_ *os.File, err error) {
+func (s *snapshotter) openOrCreateScratch(ctx context.Context, sizeGB int) (_ *os.File, err error) {
 	// Create the scratch.vhdx cache file if it doesn't already exit.
 	s.scratchLock.Lock()
 	defer s.scratchLock.Unlock()
@@ -451,10 +505,6 @@ func (s *snapshotter) openOrCreateScratch(ctx context.Context, sizeGB int, scrat
 	}
 
 	scratchFinalPath := filepath.Join(s.root, vhdFileName)
-	if scratchLoc != "" {
-		scratchFinalPath = filepath.Join(scratchLoc, vhdFileName)
-	}
-
 	scratchSource, err := os.OpenFile(scratchFinalPath, os.O_RDONLY, 0700)
 	if err != nil {
 		if !os.IsNotExist(err) {
