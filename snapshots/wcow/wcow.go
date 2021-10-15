@@ -16,26 +16,19 @@
    limitations under the License.
 */
 
-package lcow
+package wcow
 
 import (
-	"runtime"
-
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/snapshots/windows"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.SnapshotPlugin,
-		ID:   "windows-lcow",
+		ID:   "windows",
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			ic.Meta.Platforms = append(ic.Meta.Platforms, ocispec.Platform{
-				OS:           "linux",
-				Architecture: runtime.GOARCH,
-			})
-			return windows.NewLCOWSnapshotter(ic.Root)
+			return windows.NewWCOWSnapshotter(ic.Root)
 		},
 	})
 }
