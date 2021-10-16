@@ -98,7 +98,12 @@ func (l *lcowSnapshotter) Remove(ctx context.Context, key string) error {
 	}
 	defer t.Rollback()
 
-	id, _, err := storage.Remove(ctx, key)
+	id, snInfo, _, err := storage.GetInfo(ctx, key)
+	if err != nil {
+		return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to get snapshot info: %s", err)
+	}
+
+	_, _, err = storage.Remove(ctx, key)
 	if err != nil {
 		return errors.Wrap(err, "failed to remove")
 	}
@@ -124,9 +129,16 @@ func (l *lcowSnapshotter) Remove(ctx context.Context, key string) error {
 		return errors.Wrap(err, "failed to commit")
 	}
 
-	if err := os.RemoveAll(renamed); err != nil {
-		// Must be cleaned up, any "rm-*" could be removed if no active transactions
-		log.G(ctx).WithError(err).WithField("path", renamed).Warnf("Failed to remove root filesystem")
+	_, hasOverride := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	if hasOverride {
+		rmPath := l.getResolvedSnapshotDir(id, snInfo)
+		if err := os.RemoveAll(rmPath); err != nil {
+			// Must be cleaned up, any "rm-*" could be removed if no active transactions
+			log.G(ctx).WithError(err).WithField("path", rmPath).Warnf("Failed to remove root filesystem")
+		}
+	}
+	if err := os.RemoveAll(renamed); err != nil && !os.IsNotExist(err) {
+		log.G(ctx).WithError(err).Warnf("failed to remove snapshot dir: %s", renamed)
 	}
 
 	return nil
@@ -146,22 +158,18 @@ func (l *lcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 
 	if kind == snapshots.KindActive {
 		log.G(ctx).Debug("createSnapshot active")
-		// Create the new snapshot dir
-		snDir := l.getSnapshotDir(newSnapshot.ID)
-		if err := os.MkdirAll(snDir, 0700); err != nil {
-			return nil, err
-		}
-
 		var snapshotInfo snapshots.Info
 		for _, o := range opts {
 			o(&snapshotInfo)
 		}
 
-		defer func() {
-			if err != nil {
-				os.RemoveAll(snDir)
-			}
-		}()
+		// Create the new snapshot dir
+		snDir, snOverrideDir, err := l.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create snapshot directory")
+		}
+		defer onErrorDirectoryCleanup(ctx, snOverrideDir, &err)
+		defer onErrorDirectoryCleanup(ctx, snDir, &err)
 
 		// IO/disk space optimization
 		//
@@ -196,8 +204,7 @@ func (l *lcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 					sizeGB = int(i64)
 				}
 
-				scratchLocation := snapshotInfo.Labels[rootfsLocLabel]
-				scratchSource, err := l.openOrCreateScratch(ctx, sizeGB, scratchLocation)
+				scratchSource, err := l.openOrCreateScratch(ctx, sizeGB)
 				if err != nil {
 					return nil, err
 				}
@@ -223,8 +230,7 @@ func (l *lcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 		return nil, errors.Wrap(err, "commit failed")
 	}
 
-	m := l.lcowMounts(newSnapshot)
-	return m, nil
+	return l.lcowMounts(newSnapshot), nil
 }
 
 func (l *lcowSnapshotter) handleSharing(ctx context.Context, id, snDir string) error {
@@ -257,7 +263,7 @@ func (l *lcowSnapshotter) handleSharing(ctx context.Context, id, snDir string) e
 	return nil
 }
 
-func (l *lcowSnapshotter) openOrCreateScratch(ctx context.Context, sizeGB int, scratchLoc string) (_ *os.File, err error) {
+func (l *lcowSnapshotter) openOrCreateScratch(ctx context.Context, sizeGB int) (_ *os.File, err error) {
 	// Create the scratch.vhdx cache file if it doesn't already exit.
 	l.scratchLock.Lock()
 	defer l.scratchLock.Unlock()
@@ -268,9 +274,6 @@ func (l *lcowSnapshotter) openOrCreateScratch(ctx context.Context, sizeGB int, s
 	}
 
 	scratchFinalPath := filepath.Join(l.root, vhdFileName)
-	if scratchLoc != "" {
-		scratchFinalPath = filepath.Join(scratchLoc, vhdFileName)
-	}
 
 	scratchSource, err := os.OpenFile(scratchFinalPath, os.O_RDONLY, 0700)
 	if err != nil {

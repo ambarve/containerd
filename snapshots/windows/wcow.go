@@ -97,7 +97,12 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 	}
 	defer t.Rollback()
 
-	id, _, err := storage.Remove(ctx, key)
+	id, snInfo, _, err := storage.GetInfo(ctx, key)
+	if err != nil {
+		return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to get snapshot info: %s", err)
+	}
+
+	_, _, err = storage.Remove(ctx, key)
 	if err != nil {
 		return errors.Wrap(err, "failed to remove")
 	}
@@ -105,7 +110,7 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 	path := w.getSnapshotDir(id)
 	renamedID := "rm-" + id
 	renamed := w.getSnapshotDir(renamedID)
-	if err := os.Rename(path, renamed); err != nil && !os.IsNotExist(err) {
+	if err := os.Rename(path, renamed); err != nil {
 		// Sometimes if there are some open handles to the files (especially VHD)
 		// inside the snapshot directory the rename call will return "access
 		// denied" or "file is being used by another process" errors.  Just
@@ -120,25 +125,37 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 			if detachErr := vhd.DetachVhd(filepath.Join(path, "sandbox.vhdx")); detachErr != nil {
 				return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to detach vhd during snapshot cleanup %s: %s", detachErr.Error(), err)
 			}
-			if renameErr := os.Rename(path, renamed); renameErr != nil && !os.IsNotExist(renameErr) {
-				return errors.Wrapf(errdefs.ErrFailedPrecondition, "second rename attempt failed  %s: %s", renameErr.Error(), err)
+			if rerr := os.Rename(path, renamed); rerr != nil {
+				return errors.Wrapf(errdefs.ErrFailedPrecondition, "second rename attempt failed for snapshot %s with error %s", id, rerr)
 			}
 		} else {
 			return errors.Wrap(errdefs.ErrFailedPrecondition, err.Error())
 		}
+
 	}
 
 	if err := t.Commit(); err != nil {
 		if err1 := os.Rename(renamed, path); err1 != nil {
 			// May cause inconsistent data on disk
-			log.G(ctx).WithError(err1).WithField("path", renamed).Errorf("Failed to rename after failed commit")
+			log.G(ctx).WithError(err1).Errorf("failed to undo rename after failed commit")
 		}
 		return errors.Wrap(err, "failed to commit")
 	}
 
-	if err := hcsshim.DestroyLayer(w.info, renamedID); err != nil {
+	drInfo := w.info
+	destroyID := renamedID
+	scratchDir, hasOverride := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	if hasOverride {
+		drInfo.HomeDir = scratchDir
+		// We don't renamed the override directory, so pass the actual ID in that case
+		destroyID = id
+	}
+	if err := hcsshim.DestroyLayer(drInfo, destroyID); err != nil {
 		// Must be cleaned up, any "rm-*" could be removed if no active transactions
 		log.G(ctx).WithError(err).WithField("path", renamed).Warnf("Failed to remove root filesystem")
+	}
+	if err := os.RemoveAll(renamed); err != nil && !os.IsNotExist(err) {
+		log.G(ctx).WithError(err).Warnf("failed to remove snapshot dir %s", renamed)
 	}
 
 	return nil
@@ -158,11 +175,18 @@ func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 
 	if kind == snapshots.KindActive {
 		log.G(ctx).Debug("createSnapshot active")
-		// Create the new snapshot dir
-		snDir := w.getSnapshotDir(newSnapshot.ID)
-		if err := os.MkdirAll(snDir, 0700); err != nil {
-			return nil, err
+		var snapshotInfo snapshots.Info
+		for _, o := range opts {
+			o(&snapshotInfo)
 		}
+
+		// Create the new snapshot dir
+		snDir, snOverrideDir, err := w.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create snapshot directory")
+		}
+		defer onErrorDirectoryCleanup(ctx, snOverrideDir, &err)
+		defer onErrorDirectoryCleanup(ctx, snDir, &err)
 
 		// IO/disk space optimization
 		//
@@ -180,11 +204,6 @@ func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 
 			if err := hcsshim.CreateSandboxLayer(w.info, newSnapshot.ID, parentPath, parentLayerPaths); err != nil {
 				return nil, errors.Wrap(err, "failed to create sandbox layer")
-			}
-
-			var snapshotInfo snapshots.Info
-			for _, o := range opts {
-				o(&snapshotInfo)
 			}
 
 			var sizeGB int

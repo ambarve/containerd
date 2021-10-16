@@ -33,15 +33,17 @@ import (
 	"github.com/containerd/containerd/snapshots/storage"
 	"github.com/containerd/continuity/fs"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 const (
 	rootfsSizeLabel           = "containerd.io/snapshot/io.microsoft.container.storage.rootfs.size-gb"
-	rootfsLocLabel            = "containerd.io/snapshot/io.microsoft.container.storage.rootfs.location"
 	reuseScratchLabel         = "containerd.io/snapshot/io.microsoft.container.storage.reuse-scratch"
 	reuseScratchOwnerKeyLabel = "containerd.io/snapshot/io.microsoft.owner.key"
 )
 
+// windowsSnapshotterBase is the base snapshotter for both LCOW & WCOW snapshotters. It provides common
+// methods required for both snapshotters.
 type windowsSnapshotterBase struct {
 	root string
 	ms   *storage.MetaStore
@@ -123,7 +125,7 @@ func (s *windowsSnapshotterBase) Usage(ctx context.Context, key string) (snapsho
 	}
 
 	if info.Kind == snapshots.KindActive {
-		path := s.getSnapshotDir(id)
+		path := s.getResolvedSnapshotDir(id, info)
 		du, err := fs.DiskUsage(ctx, path)
 		if err != nil {
 			return snapshots.Usage{}, err
@@ -150,12 +152,12 @@ func (s *windowsSnapshotterBase) Commit(ctx context.Context, name, key string, o
 	}()
 
 	// grab the existing id
-	id, _, _, err := storage.GetInfo(ctx, key)
+	id, info, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return err
 	}
 
-	usage, err := fs.DiskUsage(ctx, s.getSnapshotDir(id))
+	usage, err := fs.DiskUsage(ctx, s.getResolvedSnapshotDir(id, info))
 	if err != nil {
 		return err
 	}
@@ -223,10 +225,69 @@ func (s *windowsSnapshotterBase) getSnapshotDir(id string) string {
 	return filepath.Join(s.root, "snapshots", id)
 }
 
+func (s *windowsSnapshotterBase) getResolvedSnapshotDir(id string, snInfo snapshots.Info) string {
+	scratchDir, ok := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	if ok {
+		return filepath.Join(scratchDir, id)
+	}
+	return filepath.Join(s.root, "snapshots", id)
+}
+
 func (s *windowsSnapshotterBase) parentIDsToParentPaths(parentIDs []string) []string {
 	var parentLayerPaths []string
 	for _, ID := range parentIDs {
 		parentLayerPaths = append(parentLayerPaths, s.getSnapshotDir(ID))
 	}
 	return parentLayerPaths
+}
+
+// OnErrorDirectoryCleanup removes the directory if given error is nil (i.e *err == nil)
+// logs any errors if any.
+func onErrorDirectoryCleanup(ctx context.Context, dirPath string, err *error) {
+	if *err != nil {
+		if removeErr := os.Remove(dirPath); removeErr != nil {
+			log.G(ctx).WithFields(logrus.Fields{
+				"cleanup dir path": dirPath,
+				"original error":   *err,
+				"cleanup error":    removeErr,
+			}).Warn("error while cleaning up after failure")
+		}
+	}
+}
+
+func (s *windowsSnapshotterBase) createSnapshotDirectory(ctx context.Context, snInfo snapshots.Info, snKey, snID string) (_, _ string, err error) {
+	snDir := s.getSnapshotDir(snID)
+
+	// create all parent directories first
+	if err = os.MkdirAll(filepath.Dir(snDir), 0700); err != nil {
+		return "", "", err
+	}
+
+	// Check if a different path was provided for scratch
+	snActualDir := ""
+	scratchDir, ok := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	if ok && !strings.Contains(snKey, snapshots.UnpackKeyPrefix) {
+		// Create the new snapshot dir at given path
+		log.G(ctx).WithFields(logrus.Fields{
+			"snapshot id":                    snID,
+			"snapshot scratch override path": scratchDir,
+		}).Debug("overriding scratch snapshot location")
+
+		snActualDir = filepath.Join(scratchDir, snID)
+		if err = os.Mkdir(snActualDir, 0700); err != nil {
+			return "", "", err
+		}
+		defer onErrorDirectoryCleanup(ctx, snActualDir, &err)
+
+		// create a link to the actual snDir in s.root/snapshots directory
+		if err := os.Symlink(snActualDir, snDir); err != nil {
+			return "", "", err
+		}
+	} else {
+		// Create the new snapshot dir
+		if err := os.Mkdir(snDir, 0700); err != nil {
+			return "", "", err
+		}
+	}
+	return snDir, snActualDir, nil
 }
