@@ -33,6 +33,7 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/storage"
 	"github.com/pkg/errors"
@@ -44,8 +45,8 @@ type lcowSnapshotter struct {
 }
 
 // NewSnapshotter returns a new windows snapshotter
-func NewLCOWSnapshotter(root string) (snapshots.Snapshotter, error) {
-	ws, err := newWindowsSnapshotter(root)
+func NewLCOWSnapshotter(ic *plugin.InitContext) (snapshots.Snapshotter, error) {
+	ws, err := newWindowsSnapshotter(ic.Root, ic.Config.(*WindowsSnapshotterConfig))
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +130,7 @@ func (l *lcowSnapshotter) Remove(ctx context.Context, key string) error {
 		return errors.Wrap(err, "failed to commit")
 	}
 
-	_, hasOverride := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	_, hasOverride := snInfo.Labels[labelScratchSnapshotLocation]
 	if hasOverride {
 		rmPath := l.getResolvedSnapshotDir(id, snInfo)
 		if err := os.RemoveAll(rmPath); err != nil {
@@ -151,25 +152,20 @@ func (l *lcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 	}
 	defer t.Rollback()
 
-	newSnapshot, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...)
+	newSnapshot, snapshotInfo, err := l.createSnapshotCommon(ctx, kind, key, parent, opts)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create snapshot")
+		return nil, err
 	}
 
 	if kind == snapshots.KindActive {
 		log.G(ctx).Debug("createSnapshot active")
-		var snapshotInfo snapshots.Info
-		for _, o := range opts {
-			o(&snapshotInfo)
-		}
 
 		// Create the new snapshot dir
 		snDir, snOverrideDir, err := l.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create snapshot directory")
 		}
-		defer onErrorDirectoryCleanup(ctx, snOverrideDir, &err)
-		defer onErrorDirectoryCleanup(ctx, snDir, &err)
+		defer onErrorDirectoryCleanup(ctx, &err, snDir, snOverrideDir)
 
 		// IO/disk space optimization
 		//

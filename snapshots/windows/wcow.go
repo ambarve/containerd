@@ -30,6 +30,7 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/storage"
 	"github.com/pkg/errors"
@@ -41,14 +42,14 @@ type wcowSnapshotter struct {
 }
 
 // NewSnapshotter returns a new windows snapshotter
-func NewWCOWSnapshotter(root string) (snapshots.Snapshotter, error) {
-	ws, err := newWindowsSnapshotter(root)
+func NewWCOWSnapshotter(ic *plugin.InitContext) (snapshots.Snapshotter, error) {
+	ws, err := newWindowsSnapshotter(ic.Root, ic.Config.(*WindowsSnapshotterConfig))
 	if err != nil {
 		return nil, err
 	}
 	return &wcowSnapshotter{
 		info: hcsshim.DriverInfo{
-			HomeDir: filepath.Join(root, "snapshots"),
+			HomeDir: filepath.Join(ic.Root, "snapshots"),
 		},
 		windowsSnapshotterBase: ws,
 	}, nil
@@ -144,7 +145,7 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 
 	drInfo := w.info
 	destroyID := renamedID
-	scratchDir, hasOverride := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	scratchDir, hasOverride := snInfo.Labels[labelScratchSnapshotLocation]
 	if hasOverride {
 		drInfo.HomeDir = scratchDir
 		// We don't renamed the override directory, so pass the actual ID in that case
@@ -168,25 +169,20 @@ func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 	}
 	defer t.Rollback()
 
-	newSnapshot, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...)
+	newSnapshot, snapshotInfo, err := w.createSnapshotCommon(ctx, kind, key, parent, opts)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create snapshot")
+		return nil, err
 	}
 
 	if kind == snapshots.KindActive {
 		log.G(ctx).Debug("createSnapshot active")
-		var snapshotInfo snapshots.Info
-		for _, o := range opts {
-			o(&snapshotInfo)
-		}
 
 		// Create the new snapshot dir
 		snDir, snOverrideDir, err := w.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create snapshot directory")
 		}
-		defer onErrorDirectoryCleanup(ctx, snOverrideDir, &err)
-		defer onErrorDirectoryCleanup(ctx, snDir, &err)
+		defer onErrorDirectoryCleanup(ctx, &err, snOverrideDir, snDir)
 
 		// IO/disk space optimization
 		//

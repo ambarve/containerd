@@ -32,10 +32,6 @@ const (
 	UnpackKeyFormat       = UnpackKeyPrefix + "-%s %s"
 	inheritedLabelsPrefix = "containerd.io/snapshot/"
 	labelSnapshotRef      = "containerd.io/snapshot.ref"
-	// snapshot location label is a label provided in snapshotter opts to specify if
-	// the scratch snapshot should be stored in a different location specified by this
-	// annotations. (Only supported on windows & lcow snapshotter as of now)
-	LabelScratchSnapshotLocation = "containerd.io/snapshot/cri.scratch-location"
 )
 
 // Kind identifies the kind of snapshot.

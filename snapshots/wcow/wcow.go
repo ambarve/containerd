@@ -25,10 +25,11 @@ import (
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.SnapshotPlugin,
-		ID:   "windows",
+		Type:   plugin.SnapshotPlugin,
+		ID:     "windows",
+		Config: &windows.WindowsSnapshotterConfig{},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			return windows.NewWCOWSnapshotter(ic.Root)
+			return windows.NewWCOWSnapshotter(ic)
 		},
 	})
 }

@@ -28,14 +28,15 @@ import (
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.SnapshotPlugin,
-		ID:   "windows-lcow",
+		Type:   plugin.SnapshotPlugin,
+		ID:     "windows-lcow",
+		Config: &windows.WindowsSnapshotterConfig{},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			ic.Meta.Platforms = append(ic.Meta.Platforms, ocispec.Platform{
 				OS:           "linux",
 				Architecture: runtime.GOARCH,
 			})
-			return windows.NewLCOWSnapshotter(ic.Root)
+			return windows.NewLCOWSnapshotter(ic)
 		},
 	})
 }

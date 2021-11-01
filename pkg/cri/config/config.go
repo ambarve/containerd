@@ -85,11 +85,6 @@ type ContainerdConfig struct {
 	// remove layers from the content store after successfully unpacking these
 	// layers to the snapshotter.
 	DiscardUnpackedLayers bool `toml:"discard_unpacked_layers" json:"discardUnpackedLayers"`
-
-	// SnapshotterScratchLocation is the path on the host at which all the container
-	// scratch snapshots should be stored. This is useful in cases when we need to
-	// keep the scratch layers on a different volume/disk than the image layers
-	SnapshotterScratchLocation string `toml:"snapshotter_scratch_location" json:"snapshotterScratchLocation"`
 }
 
 // CniConfig contains toml config related to cni

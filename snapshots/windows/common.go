@@ -40,17 +40,30 @@ const (
 	rootfsSizeLabel           = "containerd.io/snapshot/io.microsoft.container.storage.rootfs.size-gb"
 	reuseScratchLabel         = "containerd.io/snapshot/io.microsoft.container.storage.reuse-scratch"
 	reuseScratchOwnerKeyLabel = "containerd.io/snapshot/io.microsoft.owner.key"
+	// labelScratchSnapshotLocation is a label provided in snapshotter opts to specify
+	// if the scratch snapshot should be stored in a different location specified by
+	// this annotations. (Only supported on windows & lcow snapshotter as of now)
+	labelScratchSnapshotLocation = "containerd.io/snapshot/io.microsoft.override-scratch"
 )
 
 // windowsSnapshotterBase is the base snapshotter for both LCOW & WCOW snapshotters. It provides common
 // methods required for both snapshotters.
 type windowsSnapshotterBase struct {
-	root string
-	ms   *storage.MetaStore
+	root     string
+	ms       *storage.MetaStore
+	snConfig *WindowsSnapshotterConfig
+}
+
+// WindowsSnapshotterConfig is the configuration related to windows snapshotters (i.e LCOW & WCOW)
+type WindowsSnapshotterConfig struct {
+	// SnapshotterScratchLocation is the path on the host at which all the container
+	// scratch snapshots should be stored. This is useful in cases when we need to
+	// keep the scratch layers on a different volume/disk than the image layers
+	SnapshotterScratchLocation string `toml:"snapshotter_scratch_location" json:"snapshotterScratchLocation"`
 }
 
 // NewSnapshotter returns a new windows snapshotter
-func newWindowsSnapshotter(root string) (*windowsSnapshotterBase, error) {
+func newWindowsSnapshotter(root string, snConfig *WindowsSnapshotterConfig) (*windowsSnapshotterBase, error) {
 	fsType, err := winfs.GetFileSystemType(root)
 	if err != nil {
 		return nil, err
@@ -72,8 +85,9 @@ func newWindowsSnapshotter(root string) (*windowsSnapshotterBase, error) {
 	}
 
 	return &windowsSnapshotterBase{
-		root: root,
-		ms:   ms,
+		root:     root,
+		ms:       ms,
+		snConfig: snConfig,
 	}, nil
 }
 
@@ -226,7 +240,7 @@ func (s *windowsSnapshotterBase) getSnapshotDir(id string) string {
 }
 
 func (s *windowsSnapshotterBase) getResolvedSnapshotDir(id string, snInfo snapshots.Info) string {
-	scratchDir, ok := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	scratchDir, ok := snInfo.Labels[labelScratchSnapshotLocation]
 	if ok {
 		return filepath.Join(scratchDir, id)
 	}
@@ -241,18 +255,54 @@ func (s *windowsSnapshotterBase) parentIDsToParentPaths(parentIDs []string) []st
 	return parentLayerPaths
 }
 
-// OnErrorDirectoryCleanup removes the directory if given error is nil (i.e *err == nil)
+// OnErrorDirectoryCleanup removes the directories if given error is nil (i.e *err == nil)
 // logs any errors if any.
-func onErrorDirectoryCleanup(ctx context.Context, dirPath string, err *error) {
+func onErrorDirectoryCleanup(ctx context.Context, err *error, dirPaths ...string) {
 	if *err != nil {
-		if removeErr := os.Remove(dirPath); removeErr != nil {
-			log.G(ctx).WithFields(logrus.Fields{
-				"cleanup dir path": dirPath,
-				"original error":   *err,
-				"cleanup error":    removeErr,
-			}).Warn("error while cleaning up after failure")
+		for _, dirPath := range dirPaths {
+			if removeErr := os.Remove(dirPath); removeErr != nil {
+				log.G(ctx).WithFields(logrus.Fields{
+					"cleanupDir":    dirPath,
+					"originalError": *err,
+					"cleanupError":  removeErr,
+				}).Warn("error while cleaning up after failure")
+			}
 		}
 	}
+}
+
+// createSnapshotCommon creates a snapshot in the metadata db with the correct snapshot info.
+// The context must be a transaction context.
+func (s *windowsSnapshotterBase) createSnapshotCommon(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ storage.Snapshot, _ snapshots.Info, err error) {
+	newSnapshot, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...)
+	if err != nil {
+		return storage.Snapshot{}, snapshots.Info{}, errors.Wrap(err, "failed to create snapshot")
+	}
+
+	// The snapshot scratch override location could be specified in the containerd.toml or it could
+	// be specified in the container config. The one specified in the container config takes preference.
+	// Get the correct override location, update that in the snapshot snapshotInfo and save it so that all other
+	// operations will use the correct path.
+	_, snapshotInfo, _, err := storage.GetInfo(ctx, key)
+	if err != nil {
+		return storage.Snapshot{}, snapshots.Info{}, errors.Wrap(err, "failed to get snapshot info")
+	}
+
+	_, ok := snapshotInfo.Labels[labelScratchSnapshotLocation]
+	if !ok && !strings.Contains(key, snapshots.UnpackKeyPrefix) {
+		// no label provided in container config and this is a scratch snapshot
+		if s.snConfig.SnapshotterScratchLocation != "" {
+			if snapshotInfo.Labels == nil {
+				snapshotInfo.Labels = make(map[string]string)
+			}
+			snapshotInfo.Labels[labelScratchSnapshotLocation] = s.snConfig.SnapshotterScratchLocation
+			snapshotInfo, err = storage.UpdateInfo(ctx, snapshotInfo)
+			if err != nil {
+				errors.Wrap(err, "failed to write updated info")
+			}
+		}
+	}
+	return newSnapshot, snapshotInfo, nil
 }
 
 func (s *windowsSnapshotterBase) createSnapshotDirectory(ctx context.Context, snInfo snapshots.Info, snKey, snID string) (_, _ string, err error) {
@@ -265,19 +315,19 @@ func (s *windowsSnapshotterBase) createSnapshotDirectory(ctx context.Context, sn
 
 	// Check if a different path was provided for scratch
 	snActualDir := ""
-	scratchDir, ok := snInfo.Labels[snapshots.LabelScratchSnapshotLocation]
+	scratchDir, ok := snInfo.Labels[labelScratchSnapshotLocation]
 	if ok && !strings.Contains(snKey, snapshots.UnpackKeyPrefix) {
 		// Create the new snapshot dir at given path
 		log.G(ctx).WithFields(logrus.Fields{
-			"snapshot id":                    snID,
-			"snapshot scratch override path": scratchDir,
+			"snID":           snID,
+			"snOverridePath": scratchDir,
 		}).Debug("overriding scratch snapshot location")
 
 		snActualDir = filepath.Join(scratchDir, snID)
 		if err = os.Mkdir(snActualDir, 0700); err != nil {
 			return "", "", err
 		}
-		defer onErrorDirectoryCleanup(ctx, snActualDir, &err)
+		defer onErrorDirectoryCleanup(ctx, &err, snActualDir)
 
 		// create a link to the actual snDir in s.root/snapshots directory
 		if err := os.Symlink(snActualDir, snDir); err != nil {
