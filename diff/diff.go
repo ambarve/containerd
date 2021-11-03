@@ -65,6 +65,8 @@ type ApplyConfig struct {
 	ProcessorPayloads map[string]*types.Any
 }
 
+const SnapshotterNameLabel = "snapshotterName"
+
 // ApplyOpt is used to configure an Apply operation
 type ApplyOpt func(context.Context, ocispec.Descriptor, *ApplyConfig) error
 
@@ -117,6 +119,20 @@ func WithLabels(labels map[string]string) Opt {
 func WithPayloads(payloads map[string]*types.Any) ApplyOpt {
 	return func(_ context.Context, _ ocispec.Descriptor, c *ApplyConfig) error {
 		c.ProcessorPayloads = payloads
+		return nil
+	}
+}
+
+// WithSnapshotterName sets the name of the snapshotter that is being used in the labels
+func WithSnapshotterName(snapshotterName string) ApplyOpt {
+	return func(_ context.Context, _ ocispec.Descriptor, c *ApplyConfig) error {
+		if c.ProcessorPayloads == nil {
+			c.ProcessorPayloads = make(map[string]*types.Any)
+		}
+		c.ProcessorPayloads[SnapshotterNameLabel] = &types.Any{
+			TypeUrl: "",
+			Value:   []byte(snapshotterName),
+		}
 		return nil
 	}
 }

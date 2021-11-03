@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/content"
+	"github.com/containerd/containerd/diff"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/log"
@@ -214,6 +215,7 @@ EachLayer:
 		case <-fetchC[i-fetchOffset]:
 		}
 
+		u.config.ApplyOpts = append(u.config.ApplyOpts, diff.WithSnapshotterName(u.snapshotter))
 		diff, err := a.Apply(ctx, desc, mounts, u.config.ApplyOpts...)
 		if err != nil {
 			abort()
