@@ -21,6 +21,7 @@ import (
 	"io"
 
 	"github.com/Microsoft/hcsshim/pkg/ociwclayer"
+	ocicimlayer "github.com/Microsoft/hcsshim/pkg/ociwclayer/cim"
 )
 
 // applyWindowsLayer applies a tar stream of an OCI style diff tar of a Windows layer
@@ -35,6 +36,20 @@ func applyWindowsLayer(ctx context.Context, root string, r io.Reader, options Ap
 func AsWindowsContainerLayer() ApplyOpt {
 	return func(options *ApplyOptions) error {
 		options.applyFunc = applyWindowsLayer
+		return nil
+	}
+}
+
+func applyWindowsCimLayer(ctx context.Context, root string, r io.Reader, options ApplyOptions) (size int64, err error) {
+	return ocicimlayer.ImportCimLayerFromTar(ctx, r, root, options.Parents)
+}
+
+// AsCimContainerLayer indicates that the tar stream to apply is that of a Windows
+// Container Layer written in the CIM format.  The caller must be holding
+// SeBackupPrivilege and SeRestorePrivilege.
+func AsCimContainerLayer() ApplyOpt {
+	return func(options *ApplyOptions) error {
+		options.applyFunc = applyWindowsCimLayer
 		return nil
 	}
 }

@@ -56,7 +56,6 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-
 			ic.Meta.Platforms = append(ic.Meta.Platforms, platforms.DefaultSpec())
 			return NewWindowsDiff(md.(*metadata.DB).ContentStore())
 		},
@@ -87,10 +86,8 @@ func NewWindowsDiff(store content.Store) (CompareApplier, error) {
 	}, nil
 }
 
-// Apply applies the content associated with the provided digests onto the
-// provided mounts. Archive content will be extracted and decompressed if
-// necessary.
-func (s windowsDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mount.Mount, opts ...diff.ApplyOpt) (d ocispec.Descriptor, err error) {
+// applyDiffCommon is a common function that is called by both windows & cimfs differs.
+func applyDiffCommon(ctx context.Context, store content.Store, desc ocispec.Descriptor, layerPath string, parentLayerPaths []string, applyOpt archive.ApplyOpt, opts ...diff.ApplyOpt) (d ocispec.Descriptor, err error) {
 	t1 := time.Now()
 	defer func() {
 		if err == nil {
@@ -110,7 +107,7 @@ func (s windowsDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts 
 		}
 	}
 
-	ra, err := s.store.ReaderAt(ctx, desc)
+	ra, err := store.ReaderAt(ctx, desc)
 	if err != nil {
 		return emptyDesc, errors.Wrap(err, "failed to get reader from content store")
 	}
@@ -132,11 +129,6 @@ func (s windowsDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts 
 		r: io.TeeReader(processor, digester.Hash()),
 	}
 
-	layer, parentLayerPaths, err := mountsToLayerAndParents(mounts)
-	if err != nil {
-		return emptyDesc, err
-	}
-
 	// TODO darrenstahlmsft: When this is done isolated, we should disable these.
 	// it currently cannot be disabled, unless we add ref counting. Since this is
 	// temporary, leaving it enabled is OK for now.
@@ -145,7 +137,7 @@ func (s windowsDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts 
 		return emptyDesc, err
 	}
 
-	if _, err := archive.Apply(ctx, layer, rc, archive.WithParents(parentLayerPaths), archive.AsWindowsContainerLayer()); err != nil {
+	if _, err := archive.Apply(ctx, layerPath, rc, archive.WithParents(parentLayerPaths), applyOpt); err != nil {
 		return emptyDesc, err
 	}
 
@@ -159,6 +151,17 @@ func (s windowsDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts 
 		Size:      rc.c,
 		Digest:    digester.Digest(),
 	}, nil
+}
+
+// Apply applies the content associated with the provided digests onto the
+// provided mounts. Archive content will be extracted and decompressed if
+// necessary.
+func (s windowsDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mount.Mount, opts ...diff.ApplyOpt) (d ocispec.Descriptor, err error) {
+	layer, parentLayerPaths, err := mountsToLayerAndParents(mounts)
+	if err != nil {
+		return emptyDesc, err
+	}
+	return applyDiffCommon(ctx, s.store, desc, layer, parentLayerPaths, archive.AsWindowsContainerLayer(), opts...)
 }
 
 // Compare creates a diff between the given mounts and uploads the result
