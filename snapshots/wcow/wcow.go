@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 /*
@@ -30,6 +31,15 @@ func init() {
 		Config: &windows.WindowsSnapshotterConfig{},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			return windows.NewWCOWSnapshotter(ic)
+		},
+	})
+
+	plugin.Register(&plugin.Registration{
+		Type:   plugin.SnapshotPlugin,
+		ID:     "cimfs",
+		Config: &windows.WindowsSnapshotterConfig{},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			return windows.NewCimfsSnapshotter(ic)
 		},
 	})
 }
