@@ -163,7 +163,7 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 	return nil
 }
 
-func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) ([]mount.Mount, error) {
+func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ []mount.Mount, err error) {
 	ctx, t, err := w.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return nil, err
@@ -174,17 +174,9 @@ func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 	if err != nil {
 		return nil, err
 	}
+	defer onErrorDirectoryCleanup(ctx, &err, w.getSnapshotDir(newSnapshot.ID), w.getResolvedSnapshotDir(newSnapshot.ID, snapshotInfo))
 
 	if kind == snapshots.KindActive {
-		log.G(ctx).Debug("createSnapshot active")
-
-		// Create the new snapshot dir
-		snDir, snOverrideDir, err := w.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to create snapshot directory")
-		}
-		defer onErrorDirectoryCleanup(ctx, &err, snOverrideDir, snDir)
-
 		// IO/disk space optimization
 		//
 		// We only need one sandbox.vhdx for the container. Skip making one for this

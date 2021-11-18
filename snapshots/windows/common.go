@@ -272,6 +272,7 @@ func onErrorDirectoryCleanup(ctx context.Context, err *error, dirPaths ...string
 }
 
 // createSnapshotCommon creates a snapshot in the metadata db with the correct snapshot info.
+// It also creates a directory for this snapshot if this is an Active snapshot.
 // The context must be a transaction context.
 func (s *windowsSnapshotterBase) createSnapshotCommon(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ storage.Snapshot, _ snapshots.Info, err error) {
 	newSnapshot, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...)
@@ -302,9 +303,23 @@ func (s *windowsSnapshotterBase) createSnapshotCommon(ctx context.Context, kind 
 			}
 		}
 	}
+
+	if kind == snapshots.KindActive {
+		log.G(ctx).Debug("createSnapshot active")
+
+		// Create the new snapshot dir
+		_, _, err := s.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
+		if err != nil {
+			return storage.Snapshot{}, snapshots.Info{}, errors.Wrap(err, "failed to create snapshot directory")
+		}
+	}
+
 	return newSnapshot, snapshotInfo, nil
 }
 
+// createSnapshotDirectory creates a directory for the snapshot by correctly handling the
+// annotations / configs provided for overriding the location where scratch snapshots
+// should be stored.
 func (s *windowsSnapshotterBase) createSnapshotDirectory(ctx context.Context, snInfo snapshots.Info, snKey, snID string) (_, _ string, err error) {
 	snDir := s.getSnapshotDir(snID)
 
@@ -328,12 +343,12 @@ func (s *windowsSnapshotterBase) createSnapshotDirectory(ctx context.Context, sn
 		defer onErrorDirectoryCleanup(ctx, &err, snActualDir)
 
 		// create a link to the actual snDir in s.root/snapshots directory
-		if err := os.Symlink(snActualDir, snDir); err != nil {
+		if err = os.Symlink(snActualDir, snDir); err != nil {
 			return "", "", err
 		}
 	} else {
 		// Create the new snapshot dir
-		if err := os.Mkdir(snDir, 0700); err != nil {
+		if err = os.Mkdir(snDir, 0700); err != nil {
 			return "", "", err
 		}
 	}

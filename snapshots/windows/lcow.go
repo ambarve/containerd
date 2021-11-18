@@ -155,17 +155,9 @@ func (l *lcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 	if err != nil {
 		return nil, err
 	}
+	defer onErrorDirectoryCleanup(ctx, &err, l.getSnapshotDir(newSnapshot.ID), l.getResolvedSnapshotDir(newSnapshot.ID, snapshotInfo))
 
 	if kind == snapshots.KindActive {
-		log.G(ctx).Debug("createSnapshot active")
-
-		// Create the new snapshot dir
-		snDir, snOverrideDir, err := l.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to create snapshot directory")
-		}
-		defer onErrorDirectoryCleanup(ctx, &err, snDir, snOverrideDir)
-
 		// IO/disk space optimization
 		//
 		// We only need one sandbox.vhd for the container. Skip making one for this
@@ -188,6 +180,7 @@ func (l *lcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 			// disk.
 			shareScratch := snapshotInfo.Labels[reuseScratchLabel]
 			ownerKey := snapshotInfo.Labels[reuseScratchOwnerKeyLabel]
+			snDir := l.getSnapshotDir(newSnapshot.ID)
 			if shareScratch == "true" && ownerKey != "" {
 				if err = l.handleSharing(ctx, ownerKey, snDir); err != nil {
 					return nil, err
