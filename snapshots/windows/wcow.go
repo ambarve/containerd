@@ -109,6 +109,7 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 	}
 
 	path := w.getSnapshotDir(id)
+	overridePath := w.getResolvedSnapshotDir(id, snInfo)
 	renamedID := "rm-" + id
 	renamed := w.getSnapshotDir(renamedID)
 	if err := os.Rename(path, renamed); err != nil {
@@ -125,6 +126,7 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 			// before retrying the rename.
 			if detachErr := vhd.DetachVhd(filepath.Join(path, "sandbox.vhdx")); detachErr != nil {
 				return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to detach vhd during snapshot cleanup %s: %s", detachErr.Error(), err)
+
 			}
 			if rerr := os.Rename(path, renamed); rerr != nil {
 				return errors.Wrapf(errdefs.ErrFailedPrecondition, "second rename attempt failed for snapshot %s with error %s", id, rerr)
@@ -145,9 +147,8 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 
 	drInfo := w.info
 	destroyID := renamedID
-	scratchDir, hasOverride := snInfo.Labels[labelScratchSnapshotLocation]
-	if hasOverride {
-		drInfo.HomeDir = scratchDir
+	if path != overridePath {
+		drInfo.HomeDir = filepath.Dir(overridePath)
 		// We don't renamed the override directory, so pass the actual ID in that case
 		destroyID = id
 	}

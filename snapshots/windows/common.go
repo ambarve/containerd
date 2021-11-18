@@ -244,7 +244,7 @@ func (s *windowsSnapshotterBase) getResolvedSnapshotDir(id string, snInfo snapsh
 	if ok {
 		return filepath.Join(scratchDir, id)
 	}
-	return filepath.Join(s.root, "snapshots", id)
+	return s.getSnapshotDir(id)
 }
 
 func (s *windowsSnapshotterBase) parentIDsToParentPaths(parentIDs []string) []string {
@@ -260,7 +260,7 @@ func (s *windowsSnapshotterBase) parentIDsToParentPaths(parentIDs []string) []st
 func onErrorDirectoryCleanup(ctx context.Context, err *error, dirPaths ...string) {
 	if *err != nil {
 		for _, dirPath := range dirPaths {
-			if removeErr := os.Remove(dirPath); removeErr != nil {
+			if removeErr := os.Remove(dirPath); removeErr != nil && !os.IsNotExist(removeErr) {
 				log.G(ctx).WithFields(logrus.Fields{
 					"cleanupDir":    dirPath,
 					"originalError": *err,
@@ -314,16 +314,14 @@ func (s *windowsSnapshotterBase) createSnapshotDirectory(ctx context.Context, sn
 	}
 
 	// Check if a different path was provided for scratch
-	snActualDir := ""
-	scratchDir, ok := snInfo.Labels[labelScratchSnapshotLocation]
-	if ok && !strings.Contains(snKey, snapshots.UnpackKeyPrefix) {
+	snActualDir := s.getResolvedSnapshotDir(snID, snInfo)
+	if snActualDir != snDir && !strings.Contains(snKey, snapshots.UnpackKeyPrefix) {
 		// Create the new snapshot dir at given path
 		log.G(ctx).WithFields(logrus.Fields{
 			"snID":           snID,
-			"snOverridePath": scratchDir,
+			"snOverridePath": snActualDir,
 		}).Debug("overriding scratch snapshot location")
 
-		snActualDir = filepath.Join(scratchDir, snID)
 		if err = os.Mkdir(snActualDir, 0700); err != nil {
 			return "", "", err
 		}

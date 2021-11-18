@@ -110,6 +110,7 @@ func (l *lcowSnapshotter) Remove(ctx context.Context, key string) error {
 	}
 
 	path := l.getSnapshotDir(id)
+	overridePath := l.getResolvedSnapshotDir(id, snInfo)
 	renamed := l.getSnapshotDir("rm-" + id)
 	if err := os.Rename(path, renamed); err != nil && !os.IsNotExist(err) {
 		// Sometimes if there are some open handles to the files (especially VHD)
@@ -130,12 +131,10 @@ func (l *lcowSnapshotter) Remove(ctx context.Context, key string) error {
 		return errors.Wrap(err, "failed to commit")
 	}
 
-	_, hasOverride := snInfo.Labels[labelScratchSnapshotLocation]
-	if hasOverride {
-		rmPath := l.getResolvedSnapshotDir(id, snInfo)
-		if err := os.RemoveAll(rmPath); err != nil {
+	if path != overridePath {
+		if err := os.RemoveAll(overridePath); err != nil {
 			// Must be cleaned up, any "rm-*" could be removed if no active transactions
-			log.G(ctx).WithError(err).WithField("path", rmPath).Warnf("Failed to remove root filesystem")
+			log.G(ctx).WithError(err).WithField("path", overridePath).Warnf("Failed to remove root filesystem")
 		}
 	}
 	if err := os.RemoveAll(renamed); err != nil && !os.IsNotExist(err) {
