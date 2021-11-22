@@ -16,12 +16,20 @@
    limitations under the License.
 */
 
-package main
+package wcow
 
 import (
-	_ "github.com/containerd/containerd/diff/lcow"
-	_ "github.com/containerd/containerd/diff/windows"
-	_ "github.com/containerd/containerd/runtime/v2"
-	_ "github.com/containerd/containerd/snapshots/lcow"
-	_ "github.com/containerd/containerd/snapshots/wcow"
+	"github.com/containerd/containerd/plugin"
+	"github.com/containerd/containerd/snapshots/windows"
 )
+
+func init() {
+	plugin.Register(&plugin.Registration{
+		Type:   plugin.SnapshotPlugin,
+		ID:     "windows",
+		Config: &windows.WindowsSnapshotterConfig{},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			return windows.NewWCOWSnapshotter(ic)
+		},
+	})
+}
