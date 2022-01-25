@@ -65,11 +65,11 @@ func applyWindowsCimLayer(ctx context.Context, root string, tr *tar.Reader, opti
 		default:
 		}
 
-		if nextErr == io.EOF {
-			// end of tar archive
-			break
-		}
 		if nextErr != nil {
+			if nextErr == io.EOF {
+				// end of tar archive
+				break
+			}
 			return 0, nextErr
 		}
 
