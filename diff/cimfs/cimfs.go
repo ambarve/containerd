@@ -132,7 +132,7 @@ func (c cimDiff) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 		r: io.TeeReader(processor, digester.Hash()),
 	}
 
-	layer, parentLayerPaths, err := cimmountsToLayerAndParents(mounts)
+	layer, parentLayerPaths, err := cimMountsToLayerAndParents(mounts)
 	if err != nil {
 		return emptyDesc, err
 	}
@@ -177,7 +177,7 @@ func (rc *readCounter) Read(p []byte) (n int, err error) {
 	return
 }
 
-func cimmountsToLayerAndParents(mounts []mount.Mount) (string, []string, error) {
+func cimMountsToLayerAndParents(mounts []mount.Mount) (string, []string, error) {
 	if len(mounts) != 1 {
 		return "", nil, errors.Wrap(errdefs.ErrInvalidArgument, "number of mounts should always be 1 for Windows layers")
 	}
