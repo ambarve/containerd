@@ -20,7 +20,6 @@ package cimfs
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"time"
@@ -56,7 +55,7 @@ func init() {
 			}
 			// Verify that we are running the OS version supported for cimfs
 			if !hcsshim.IsCimfsSupported() {
-				return nil, fmt.Errorf("host windows version doesn't support cimfs")
+				return nil, errors.New("host windows version doesn't support cimfs")
 			}
 			ic.Meta.Platforms = append(ic.Meta.Platforms, platforms.DefaultSpec())
 			return NewCimDiff(md.(*metadata.DB).ContentStore())
