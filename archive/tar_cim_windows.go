@@ -91,22 +91,19 @@ func applyWindowsCimLayer(ctx context.Context, root string, tr *tar.Reader, opti
 			}
 			hdr, nextErr = tr.Next()
 		} else {
-			var sddl []byte
-			var eadata []byte
-			var reparse []byte
 			name, fileSize, fileInfo, err := fileInfoFromHeader(hdr)
 			if err != nil {
 				return 0, err
 			}
-			sddl, err = encodeSDDLFromTarHeader(hdr)
+			sddl, err := encodeSDDLFromTarHeader(hdr)
 			if err != nil {
 				return 0, err
 			}
-			eadata, err = encodeExtendedAttributesFromTarHeader(hdr)
+			eadata, err := encodeExtendedAttributesFromTarHeader(hdr)
 			if err != nil {
 				return 0, err
 			}
-			reparse = encodeReparsePointFromTarHeader(hdr)
+			reparse := encodeReparsePointFromTarHeader(hdr)
 			// If reparse point flag is set but reparse buffer is empty remove the flag.
 			if (fileInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT) > 0 && len(reparse) == 0 {
 				fileInfo.FileAttributes &^= uint32(windows.FILE_ATTRIBUTE_REPARSE_POINT)

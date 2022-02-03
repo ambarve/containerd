@@ -370,7 +370,6 @@ func encodeReparsePointFromTarHeader(hdr *tar.Header) []byte {
 // tar file that was not processed, or io.EOF is there are no more.
 func writeBackupStreamFromTarFile(w io.Writer, t *tar.Reader, hdr *tar.Header) (*tar.Header, error) {
 	bw := winio.NewBackupStreamWriter(w)
-	var err error
 	sd, err := encodeSDDLFromTarHeader(hdr)
 	if err != nil {
 		return nil, err
