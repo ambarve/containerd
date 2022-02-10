@@ -84,7 +84,7 @@ func (l *lcowSnapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount
 
 	snapshot, err := storage.GetSnapshot(ctx, key)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to get snapshot mount")
+		return nil, errors.Wrapf(err, "failed to get snapshot mount for key %s", key)
 	}
 	m := l.lcowMounts(snapshot)
 	return m, nil
@@ -101,12 +101,12 @@ func (l *lcowSnapshotter) Remove(ctx context.Context, key string) error {
 
 	id, snInfo, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
-		return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to get snapshot info: %s", err)
+		return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to get snapshot info for key %s: %s", key, err)
 	}
 
 	_, _, err = storage.Remove(ctx, key)
 	if err != nil {
-		return errors.Wrap(err, "failed to remove")
+		return errors.Wrapf(err, "failed to remove snapshot %s", id)
 	}
 
 	path := l.getSnapshotDir(id)
@@ -128,7 +128,7 @@ func (l *lcowSnapshotter) Remove(ctx context.Context, key string) error {
 			// May cause inconsistent data on disk
 			log.G(ctx).WithError(err1).WithField("path", renamed).Errorf("Failed to rename after failed commit")
 		}
-		return errors.Wrap(err, "failed to commit")
+		return errors.Wrapf(err, "failed to commit removal of snapshot %s", id)
 	}
 
 	if path != overridePath {
@@ -202,20 +202,20 @@ func (l *lcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 				destPath := filepath.Join(snDir, "sandbox.vhdx")
 				dest, err := os.OpenFile(destPath, os.O_RDWR|os.O_CREATE, 0700)
 				if err != nil {
-					return nil, errors.Wrap(err, "failed to create sandbox.vhdx in snapshot")
+					return nil, errors.Wrapf(err, "failed to create sandbox.vhdx for snapshot key %s", key)
 				}
 				defer dest.Close()
 				if _, err := io.Copy(dest, scratchSource); err != nil {
 					dest.Close()
 					os.Remove(destPath)
-					return nil, errors.Wrap(err, "failed to copy cached scratch.vhdx to sandbox.vhdx in snapshot")
+					return nil, errors.Wrapf(err, "failed to copy cached scratch.vhdx to sandbox.vhdx for snapshot key %s", key)
 				}
 			}
 		}
 	}
 
 	if err := t.Commit(); err != nil {
-		return nil, errors.Wrap(err, "commit failed")
+		return nil, errors.Wrapf(err, "create snapshot tx commit failed for snapshot key %s", key)
 	}
 
 	return l.lcowMounts(newSnapshot), nil
@@ -234,13 +234,13 @@ func (l *lcowSnapshotter) handleSharing(ctx context.Context, id, snDir string) e
 
 	mounts, err := l.Mounts(ctx, key)
 	if err != nil {
-		return errors.Wrap(err, "failed to get mounts for owner snapshot")
+		return errors.Wrapf(err, "failed to get mounts for owner snapshot (id %s)", id)
 	}
 
 	sandboxPath := filepath.Join(mounts[0].Source, "sandbox.vhdx")
 	linkPath := filepath.Join(snDir, "sandbox.vhdx")
 	if _, err := os.Stat(sandboxPath); err != nil {
-		return errors.Wrap(err, "failed to find sandbox.vhdx in snapshot directory")
+		return errors.Wrapf(err, "failed to find sandbox.vhdx in snapshot directory %s", mounts[0].Source)
 	}
 
 	// We've found everything we need, now just make a symlink in our new snapshot to the
@@ -301,7 +301,7 @@ func (l *lcowSnapshotter) openOrCreateScratch(ctx context.Context, sizeGB int) (
 		scratchSource, err = os.OpenFile(scratchFinalPath, os.O_RDONLY, 0700)
 		if err != nil {
 			os.Remove(scratchFinalPath)
-			return nil, errors.Wrap(err, "failed to open scratch.vhdx for read after creation")
+			return nil, errors.Wrapf(err, "failed to open scratch.vhdx at %s for read after creation", scratchFinalPath)
 		}
 	} else {
 		log.G(ctx).Debugf("scratch vhd %s was already present. Retrieved from cache", vhdFileName)

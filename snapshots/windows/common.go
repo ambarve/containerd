@@ -177,7 +177,7 @@ func (s *windowsSnapshotterBase) Commit(ctx context.Context, name, key string, o
 	}
 
 	if _, err = storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
-		return errors.Wrap(err, "failed to commit snapshot")
+		return errors.Wrapf(err, "failed to commit snapshot %s", id)
 	}
 	return t.Commit()
 }
@@ -277,16 +277,17 @@ func onErrorDirectoryCleanup(ctx context.Context, err *error, dirPaths ...string
 func (s *windowsSnapshotterBase) createSnapshotCommon(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ storage.Snapshot, _ snapshots.Info, err error) {
 	newSnapshot, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...)
 	if err != nil {
-		return storage.Snapshot{}, snapshots.Info{}, errors.Wrap(err, "failed to create snapshot")
+		return storage.Snapshot{}, snapshots.Info{}, errors.Wrapf(err, "failed to create snapshot with key %s", key)
 	}
 
+	log.G(ctx).Debug("creating new snapshot for key %s, %+v", key, newSnapshot)
 	// The snapshot scratch override location could be specified in the containerd.toml or it could
 	// be specified in the container config. The one specified in the container config takes preference.
 	// Get the correct override location, update that in the snapshot snapshotInfo and save it so that all other
 	// operations will use the correct path.
 	_, snapshotInfo, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
-		return storage.Snapshot{}, snapshots.Info{}, errors.Wrap(err, "failed to get snapshot info")
+		return storage.Snapshot{}, snapshots.Info{}, errors.Wrapf(err, "failed to get snapshot info for key %s", key)
 	}
 
 	_, ok := snapshotInfo.Labels[labelScratchSnapshotLocation]
@@ -299,18 +300,16 @@ func (s *windowsSnapshotterBase) createSnapshotCommon(ctx context.Context, kind 
 			snapshotInfo.Labels[labelScratchSnapshotLocation] = s.snConfig.SnapshotterScratchLocation
 			snapshotInfo, err = storage.UpdateInfo(ctx, snapshotInfo)
 			if err != nil {
-				errors.Wrap(err, "failed to write updated info")
+				errors.Wrapf(err, "failed to write updated info for snapshot key %s", key)
 			}
 		}
 	}
 
 	if kind == snapshots.KindActive {
-		log.G(ctx).Debug("createSnapshot active")
-
 		// Create the new snapshot dir
 		_, _, err := s.createSnapshotDirectory(ctx, snapshotInfo, key, newSnapshot.ID)
 		if err != nil {
-			return storage.Snapshot{}, snapshots.Info{}, errors.Wrap(err, "failed to create snapshot directory")
+			return storage.Snapshot{}, snapshots.Info{}, errors.Wrapf(err, "failed to create snapshot directory for snapshot key %s", key)
 		}
 	}
 

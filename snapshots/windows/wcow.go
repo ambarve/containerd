@@ -84,7 +84,7 @@ func (w *wcowSnapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount
 
 	snapshot, err := storage.GetSnapshot(ctx, key)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to get snapshot mount")
+		return nil, errors.Wrapf(err, "failed to get snapshot mounts for key %s", key)
 	}
 	return w.wcowMounts(snapshot), nil
 }
@@ -100,12 +100,12 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 
 	id, snInfo, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
-		return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to get snapshot info: %s", err)
+		return errors.Wrapf(errdefs.ErrFailedPrecondition, "failed to get info for snapshot key %s: %s", key, err)
 	}
 
 	_, _, err = storage.Remove(ctx, key)
 	if err != nil {
-		return errors.Wrap(err, "failed to remove")
+		return errors.Wrapf(err, "failed to remove snapshot with key %s", key)
 	}
 
 	path := w.getSnapshotDir(id)
@@ -129,7 +129,7 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 
 			}
 			if rerr := os.Rename(path, renamed); rerr != nil {
-				return errors.Wrapf(errdefs.ErrFailedPrecondition, "second rename attempt failed for snapshot %s with error %s", id, rerr)
+				return errors.Wrapf(errdefs.ErrFailedPrecondition, "second rename attempt failed for snapshot with error %s", rerr)
 			}
 		} else {
 			return errors.Wrap(errdefs.ErrFailedPrecondition, err.Error())
@@ -142,7 +142,7 @@ func (w *wcowSnapshotter) Remove(ctx context.Context, key string) error {
 			// May cause inconsistent data on disk
 			log.G(ctx).WithError(err1).Errorf("failed to undo rename after failed commit")
 		}
-		return errors.Wrap(err, "failed to commit")
+		return errors.Wrapf(err, "failed to commit removal of snapshot %s", id)
 	}
 
 	drInfo := w.info
@@ -192,7 +192,7 @@ func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 			}
 
 			if err := hcsshim.CreateSandboxLayer(w.info, newSnapshot.ID, parentPath, parentLayerPaths); err != nil {
-				return nil, errors.Wrap(err, "failed to create sandbox layer")
+				return nil, errors.Wrapf(err, "failed to create sandbox layer for snapshot key %s", key)
 			}
 
 			var sizeGB int
@@ -207,14 +207,14 @@ func (w *wcowSnapshotter) createSnapshot(ctx context.Context, kind snapshots.Kin
 			if sizeGB > 0 {
 				const gbToByte = 1024 * 1024 * 1024
 				if err := hcsshim.ExpandSandboxSize(w.info, newSnapshot.ID, uint64(gbToByte*sizeGB)); err != nil {
-					return nil, errors.Wrapf(err, "failed to expand scratch size to %d GB", sizeGB)
+					return nil, errors.Wrapf(err, "failed to expand scratch size to %d GB for snapshot key %s", sizeGB, key)
 				}
 			}
 		}
 	}
 
 	if err := t.Commit(); err != nil {
-		return nil, errors.Wrap(err, "commit failed")
+		return nil, errors.Wrapf(err, "creation snapshot tx commit failed for snapshot key %s", key)
 	}
 
 	return w.wcowMounts(newSnapshot), nil
