@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 /*
@@ -205,14 +206,6 @@ func isScratchLayer(key string) bool {
 	// TODO(ambarve): Use the unpackkeyprefix here after rebase
 	return !strings.Contains(key, "extract")
 }
-
-// detectSubType detects if this is going to be a read-only image layer (in which case it will
-// be written to cimfs), or if this is going to be a r/w scratch layer of an container (in which case
-// it will have parent cim layers but legacy windows scratch layers), or if this is going to be
-// a read-only (view) snapshot of an existing cim layer.
-// func detectSubType(key string, opts ...snapshots.Opt) (string, error) {
-// 	if strings.Contains(key,
-// }
 
 // getCimLayerPath returns the path of the cim file for the given snapshot. Note that this function
 // doesn't actually check if the cim layer exists it simply does string manipulation to generate the path
@@ -461,16 +454,22 @@ func (s *cimfsSnapshotter) Remove(ctx context.Context, key string) error {
 				return errors.Wrap(err, "failed to unmount cim")
 			}
 		}
-	} else {
+	}
+
+	if isCimLayer, err := s.isCimLayer(ctx, key); err != nil {
+		return errors.Wrap(err, "failed to detect if this is a cim layer")
+	} else if isCimLayer {
 		if s.cmm.inUse(key) {
 			return errors.Errorf("can't remove snapshot when it is being used")
 		}
+
 		// unmount this cim first
 		if err := s.cmm.unmountSnapshot(ctx, key); err != nil {
 			if !errors.Is(err, ErrCimNotMounted) {
 				return errors.Wrap(err, "failed to unmount cim")
 			}
 		}
+
 		if err := hcsshim.DestroyCimLayer(s.legacySn.info, id); err != nil {
 			return err
 		}
