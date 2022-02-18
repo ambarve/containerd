@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 /*
@@ -18,6 +19,13 @@
 
 package archive
 
+import (
+	"archive/tar"
+	"context"
+
+	"github.com/Microsoft/hcsshim/pkg/ociwclayer"
+)
+
 // AsWindowsContainerLayer indicates that the tar stream to apply is that of
 // a Windows Container Layer. The caller must be holding SeBackupPrivilege and
 // SeRestorePrivilege.
@@ -26,6 +34,10 @@ func AsWindowsContainerLayer() ApplyOpt {
 		options.applyFunc = applyWindowsLayer
 		return nil
 	}
+}
+
+func applyWindowsCimLayer(ctx context.Context, root string, tr *tar.Reader, options ApplyOptions) (size int64, err error) {
+	return ociwclayer.ImportCimLayerFromTar(ctx, root, tr, options.Parents)
 }
 
 // AsCimContainerLayer indicates that the tar stream to apply is that of a Windows

@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 /*
@@ -19,7 +20,6 @@
 package main
 
 import (
-	_ "github.com/containerd/containerd/diff/cimfs"
 	_ "github.com/containerd/containerd/diff/lcow"
 	_ "github.com/containerd/containerd/diff/windows"
 	_ "github.com/containerd/containerd/runtime/v2"
