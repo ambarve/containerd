@@ -56,7 +56,6 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-
 			ic.Meta.Platforms = append(ic.Meta.Platforms, platforms.DefaultSpec())
 			return NewWindowsDiff(md.(*metadata.DB).ContentStore())
 		},
@@ -138,7 +137,7 @@ func applyDiffCommon(ctx context.Context, store content.Store, desc ocispec.Desc
 		return emptyDesc, err
 	}
 
-	if _, err := archive.Apply(ctx, layerPath, rc, archive.WithParents(parentLayerPaths), archive.AsWindowsContainerLayer()); err != nil {
+	if _, err := archive.Apply(ctx, layerPath, rc, archive.WithParents(parentLayerPaths), applyOpt); err != nil {
 		return emptyDesc, err
 	}
 
