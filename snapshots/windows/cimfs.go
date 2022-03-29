@@ -453,6 +453,7 @@ func (s *cimfsSnapshotter) Remove(ctx context.Context, key string) error {
 	}
 	defer t.Rollback()
 
+	// Get info before calling legacySn.Remove
 	id, info, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return errors.Wrap(err, "failed to get snapshot info")
@@ -485,7 +486,12 @@ func (s *cimfsSnapshotter) Remove(ctx context.Context, key string) error {
 			return err
 		}
 	}
+	// Must rollback this transaction before calling legacySn.Remove since that function opens its
+	// own transaction.
+	t.Rollback()
+
 	return s.legacySn.Remove(ctx, key)
+
 }
 
 // Walk the committed snapshots.
