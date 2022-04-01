@@ -106,7 +106,7 @@ func (m *Mount) GetParentPaths() ([]string, error) {
 // Unmount the mount at the provided path
 func Unmount(mount string, flags int) error {
 	if _, ok := hostMounts[mount]; !ok {
-		return errors.Errorf("target %s is not mounted", mount)
+		return nil
 	}
 	// unmount procedure is same for both cimfs & legacy in this case.
 	return legacyUnmount(mount, flags)

@@ -214,8 +214,7 @@ func loadMountedCimInfo(ctx context.Context) (map[string]*mountedCimInfo, error)
 // In case of image layer snapshots this will determined by looking at the UnpackKeyPrefix
 // option present in the snapshot opts.
 func isScratchLayer(key string) bool {
-	// TODO(ambarve): Use the unpackkeyprefix here after rebase
-	return !strings.Contains(key, "extract")
+	return !strings.Contains(key, snapshots.UnpackKeyPrefix)
 }
 
 // getCimLayerPath returns the path of the cim file for the given snapshot. Note that this function
