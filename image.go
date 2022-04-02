@@ -28,6 +28,7 @@ import (
 	"github.com/containerd/containerd/diff"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/pkg/kmutex"
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/rootfs"
 	"github.com/containerd/containerd/snapshots"
@@ -287,6 +288,10 @@ type UnpackConfig struct {
 	// CheckPlatformSupported is whether to validate that a snapshotter
 	// supports an image's platform before unpacking
 	CheckPlatformSupported bool
+	// DuplicationSuppressor is used to make sure that there is only one
+	// in-flight fetch request or unpack handler for a given descriptor's
+	// digest or chain ID.
+	DuplicationSuppressor kmutex.KeyedLocker
 }
 
 // UnpackOpt provides configuration for unpack
@@ -304,6 +309,14 @@ func WithSnapshotterPlatformCheck() UnpackOpt {
 func WithUnpackConfigApplyOpts(opts ...diff.ApplyOpt) UnpackOpt {
 	return func(_ context.Context, uc *UnpackConfig) error {
 		uc.ApplyOpts = append(uc.ApplyOpts, opts...)
+		return nil
+	}
+}
+
+// WithUnpackDuplicationSuppressor sets `DuplicationSuppressor` on the UnpackConfig.
+func WithUnpackDuplicationSuppressor(suppressor kmutex.KeyedLocker) UnpackOpt {
+	return func(ctx context.Context, uc *UnpackConfig) error {
+		uc.DuplicationSuppressor = suppressor
 		return nil
 	}
 }
