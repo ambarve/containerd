@@ -158,7 +158,7 @@ EachLayer:
 			key = fmt.Sprintf(snapshots.UnpackKeyFormat, uniquePart(), chainID)
 			mounts, err = sn.Prepare(ctx, key, parent.String(), opts...)
 			if err != nil {
-				if errdefs.IsAlreadyExists(err) {
+				if errdefs.IsAlreadyExists(err) || snapshots.IsTargetSnapshotExists(err) {
 					if _, err := sn.Stat(ctx, chainID); err != nil {
 						if !errdefs.IsNotFound(err) {
 							return fmt.Errorf("failed to stat snapshot %s: %w", chainID, err)
