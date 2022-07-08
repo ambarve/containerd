@@ -366,6 +366,10 @@ type RemoteContext struct {
 	// ChildLabelMap sets the labels used to reference child objects in the content
 	// store. By default, all GC reference labels will be set for all fetched content.
 	ChildLabelMap func(ocispec.Descriptor) []string
+
+	// ContentForceDownload when set to true downloads the content blob even if it
+	// already exists in the content store.
+	ContentForceDownload bool
 }
 
 func defaultRemoteContext() *RemoteContext {

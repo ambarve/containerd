@@ -259,3 +259,12 @@ func WithAllMetadata() RemoteOpt {
 		return nil
 	}
 }
+
+// WithContentForceDownload downloads all the image content during a pull even if
+// it already exists in the image store.
+func WithContentForceDownload() RemoteOpt {
+	return func(_ *Client, c *RemoteContext) error {
+		c.ContentForceDownload = true
+		return nil
+	}
+}
