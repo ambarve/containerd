@@ -109,9 +109,9 @@ func FetchHandler(ingester content.Ingester, fetcher Fetcher, forceFetch bool) i
 func fetch(ctx context.Context, ingester content.Ingester, fetcher Fetcher, desc ocispec.Descriptor, forceFetch bool) error {
 	log.G(ctx).Debug("fetch")
 
-	opts := []content.WriterOpt{}
+	opts := []content.WriterOpt{content.WithRef(MakeRefKey(ctx, desc))}
 	if !forceFetch {
-		opts = append(opts, content.WithRef(MakeRefKey(ctx, desc)))
+		opts = append(opts, content.WithDescriptor(desc))
 	}
 	cw, err := content.OpenWriter(ctx, ingester, opts...)
 	if err != nil {
