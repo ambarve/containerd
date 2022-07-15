@@ -130,6 +130,16 @@ func (u *unpacker) unpack(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	if rCtx.ContentForceDownload {
+		fetchC := make([]chan struct{}, len(layers))
+		for i := range fetchC {
+			fetchC[i] = make(chan struct{})
+		}
+		if err := u.fetch(ctx, h, layers, fetchC); err != nil {
+			return fmt.Errorf("failed to fetch image layers: %w", err)
+		}
+	}
+
 	doUnpackFn := func(i int, desc ocispec.Descriptor) error {
 		parent := identity.ChainID(chain)
 		chain = append(chain, diffIDs[i])
