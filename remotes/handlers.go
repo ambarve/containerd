@@ -88,7 +88,7 @@ func MakeRefKey(ctx context.Context, desc ocispec.Descriptor) string {
 // FetchHandler returns a handler that will fetch all content into the ingester
 // discovered in a call to Dispatch. Use with ChildrenHandler to do a full
 // recursive fetch.
-func FetchHandler(ingester content.Ingester, fetcher Fetcher) images.HandlerFunc {
+func FetchHandler(ingester content.Ingester, fetcher Fetcher, forceFetch bool) images.HandlerFunc {
 	return func(ctx context.Context, desc ocispec.Descriptor) (subdescs []ocispec.Descriptor, err error) {
 		ctx = log.WithLogger(ctx, log.G(ctx).WithFields(logrus.Fields{
 			"digest":    desc.Digest,
@@ -100,16 +100,20 @@ func FetchHandler(ingester content.Ingester, fetcher Fetcher) images.HandlerFunc
 		case images.MediaTypeDockerSchema1Manifest:
 			return nil, fmt.Errorf("%v not supported", desc.MediaType)
 		default:
-			err := fetch(ctx, ingester, fetcher, desc)
+			err := fetch(ctx, ingester, fetcher, desc, forceFetch)
 			return nil, err
 		}
 	}
 }
 
-func fetch(ctx context.Context, ingester content.Ingester, fetcher Fetcher, desc ocispec.Descriptor) error {
+func fetch(ctx context.Context, ingester content.Ingester, fetcher Fetcher, desc ocispec.Descriptor, forceFetch bool) error {
 	log.G(ctx).Debug("fetch")
 
-	cw, err := content.OpenWriter(ctx, ingester, content.WithRef(MakeRefKey(ctx, desc)), content.WithDescriptor(desc))
+	opts := []content.WriterOpt{content.WithRef(MakeRefKey(ctx, desc))}
+	if !forceFetch {
+		opts = append(opts, content.WithDescriptor(desc))
+	}
+	cw, err := content.OpenWriter(ctx, ingester, opts...)
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			return nil

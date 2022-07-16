@@ -199,7 +199,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		}
 
 		handlers := append(rCtx.BaseHandlers,
-			remotes.FetchHandler(store, fetcher),
+			remotes.FetchHandler(store, fetcher, rCtx.ContentForceDownload),
 			convertibleHandler,
 			childrenHandler,
 			appendDistSrcLabelHandler,
